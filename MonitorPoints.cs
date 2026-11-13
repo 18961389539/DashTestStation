@@ -8,7 +8,8 @@ public enum MonitorPointId
     NormalSpeed, DustSpeed, SpeedDelta, SpeedVerdict, DirectionVerdict,
     Voltage, Result, BrushLightVerdict,
     NormalVoltage, NormalCurrent, NormalCurrentVerdict, NormalPowerVerdict, NormalSpeedVerdict,
-    BrushLightOffVerdict, DustCurrent, DustCurrentVerdict, DustPowerVerdict, DustSpeedVerdict
+    BrushLightOffVerdict, DustCurrent, DustCurrentVerdict, DustPowerVerdict, DustSpeedVerdict,
+    RunState
 }
 
 public enum RegisterDataType { Int16, UInt16, Int32, UInt32, Float32 }
@@ -59,7 +60,8 @@ internal sealed record MonitorPointDefinition(
         [MonitorPointId.DustCurrent] = new("灰尘测试电流", null, RegisterDataType.Float32, "A"),
         [MonitorPointId.DustCurrentVerdict] = new("灰尘电流判定结果", null, RegisterDataType.UInt16),
         [MonitorPointId.DustPowerVerdict] = new("灰尘功率判定结果", null, RegisterDataType.UInt16),
-        [MonitorPointId.DustSpeedVerdict] = new("灰尘转速判定结果", null, RegisterDataType.UInt16)
+        [MonitorPointId.DustSpeedVerdict] = new("灰尘转速判定结果", null, RegisterDataType.UInt16),
+        [MonitorPointId.RunState] = new("运行状态", 0, RegisterDataType.Int16)
     };
 
     public static MonitorPointDefinition For(MonitorPointId id) => Definitions[id];
@@ -160,15 +162,14 @@ internal sealed class MonitorReadPlan
             || start < barcode.End && barcode.Address < end
             || points.Values.Any(point => start < point.End && point.Address < end));
 
-    public (TestSnapshot Test, ushort Feedback) Read(Func<ushort, ushort, ushort[]> read,
-        bool readHistoryOnCompletion = true, bool triggered = false)
+    public (TestSnapshot Test, ushort Feedback) Read(Func<ushort, ushort, ushort[]> read, bool triggered = false)
     {
         for (int attempt = 0; attempt < 2; attempt++)
         {
             var telemetry = read(settings.TelemetryAddress, PlcLayout.TelemetryWords);
-            var identity = PlcLayout.ReadIdentity(telemetry, settings.LowWordFirst);
-            bool readHistory = triggered || (readHistoryOnCompletion && identity.Stage == TestStage.Completed);
-            var additionalBlocks = readHistory ? completedBlocks : liveBlocks;
+            ushort runState = ReadRunState(read, telemetry);
+            uint cycle = PlcLayout.ReadCycle(telemetry, settings.LowWordFirst);
+            var additionalBlocks = triggered ? completedBlocks : liveBlocks;
             var extra = additionalBlocks.Select(block =>
                 read((ushort)block.Start, (ushort)(block.End - block.Start))).ToArray();
             bool barcodeInTelemetry = InTelemetry(barcode.Address, barcode.End);
@@ -179,14 +180,14 @@ internal sealed class MonitorReadPlan
             if (extra.Length > 0 || !barcodeInTelemetry)
             {
                 var latest = read(settings.TelemetryAddress, PlcLayout.TelemetryWords);
-                if (identity != PlcLayout.ReadIdentity(latest, settings.LowWordFirst))
+                if (cycle != PlcLayout.ReadCycle(latest, settings.LowWordFirst) || runState != ReadRunState(read, latest))
                     continue;
             }
 
             double? Value(MonitorPointId id)
             {
                 var definition = MonitorPointDefinition.For(id);
-                if ((!readHistory && !definition.Offset.HasValue) || !points.TryGetValue(id, out var point))
+                if ((!triggered && !definition.Offset.HasValue) || !points.TryGetValue(id, out var point))
                     return null;
                 if (InTelemetry(point.Address, point.End))
                     return definition.Decode(point.DataType,
@@ -197,9 +198,33 @@ internal sealed class MonitorReadPlan
                     extra[block].AsSpan(point.Address - additionalBlocks[block].Start, point.WordCount), settings.LowWordFirst);
             }
 
-            return PlcLayout.Decode(telemetry, settings.LowWordFirst, Value, PlcLayout.ReadString(barcodeWords), triggered);
+            return PlcLayout.Decode(telemetry, settings.LowWordFirst, runState, Value,
+                PlcLayout.ReadString(barcodeWords), triggered);
         }
 
         throw new InvalidDataException("读取测试点位期间 PLC 状态发生变化，请等待下一次轮询。");
+    }
+
+    public TestStage ReadStage(Func<ushort, ushort, ushort[]> read)
+    {
+        var point = RunStatePoint;
+        return PlcLayout.StageOf(DecodeRunState(point, read(point.Address, (ushort)point.WordCount)));
+    }
+
+    private MonitorPoint RunStatePoint => points.TryGetValue(MonitorPointId.RunState, out var point)
+        ? point : throw new InvalidOperationException("未配置运行状态点位。");
+
+    private ushort ReadRunState(Func<ushort, ushort, ushort[]> read, ushort[] telemetry)
+    {
+        var point = RunStatePoint;
+        return DecodeRunState(point, InTelemetry(point.Address, point.End)
+            ? telemetry.AsSpan(point.Address - settings.TelemetryAddress, point.WordCount)
+            : read(point.Address, (ushort)point.WordCount));
+    }
+
+    private ushort DecodeRunState(MonitorPoint point, ReadOnlySpan<ushort> words)
+    {
+        double value = MonitorPointDefinition.For(MonitorPointId.RunState).Decode(point.DataType, words, settings.LowWordFirst);
+        return value is >= 0 and <= ushort.MaxValue && value == Math.Floor(value) ? (ushort)value : ushort.MaxValue;
     }
 }

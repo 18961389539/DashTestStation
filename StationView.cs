@@ -64,7 +64,8 @@ public sealed class StationView : Bindable
 
     public string ConnectionLabel => IsSimulation ? "模拟模式" : online ? "PLC 已连接" : "PLC 未连接";
     public Brush ConnectionColor => (Brush)App.Current.FindResource(IsSimulation ? "Accent" : online ? "Green" : "Red");
-    public string StageLabel => !IsSimulation && !online ? "等待 PLC 数据" : snapshot.Stage switch
+    public string StageLabel => !IsSimulation && !online ? "等待 PLC 数据"
+        : snapshot.RunState is ushort code ? PlcLayout.RunStateLabel(code) : snapshot.Stage switch
     {
         TestStage.Normal => "正常负载测试中",
         TestStage.Dust => "灰尘负载测试中",
@@ -85,6 +86,11 @@ public sealed class StationView : Bindable
     private bool CanOperate => !busy && online && !snapshot.Running && (IsSimulation || IsAdministrator);
     public bool CanReset => CanOperate && station.Supports("reset");
     public bool CanEditMonitorPoints => CanSwitchMode && IsAdministrator;
+    public string MonitorPointEditHint => !IsAdministrator ? "仅管理员可编辑地址配置，请先登录管理员账号。"
+        : busy ? "系统正在处理操作，暂时无法编辑地址。"
+        : sendingRecipe ? "配方正在下发，暂时无法编辑地址。"
+        : snapshot.Running ? "测试进行中，地址配置已锁定。"
+        : "管理员可编辑；测试运行期间地址配置将自动锁定。";
     public bool CanUseManual => !busy && manualOnline && !manualBlockedByStage
         && (IsSimulation || IsAdministrator);
     public bool CanEditRecipe => !busy && !snapshot.Running && IsAdministrator;
@@ -144,6 +150,7 @@ public sealed class StationView : Bindable
         Changed(nameof(CanSwitchMode));
         Changed(nameof(CanApplyRecipe));
         Changed(nameof(CanEditMonitorPoints));
+        Changed(nameof(MonitorPointEditHint));
         Changed(nameof(CanWritePlcTest));
     }
 

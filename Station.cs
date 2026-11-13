@@ -116,6 +116,8 @@ public sealed class ModbusStation : IStation
     private Dictionary<ManualPointId, ManualPoint> manualPoints = null!;
     private IReadOnlyDictionary<string, InspectionPoint> inspectionOverrides = null!;
     private ushort? recordTrigger;
+    private ushort? timerTrigger;
+    private readonly Stopwatch testTimer = new();
     private ushort[] feedbackAddresses = [];
     private readonly HashSet<ushort> heldAddresses = [];
     private readonly HashSet<ushort> pendingReleases = [];
@@ -139,7 +141,8 @@ public sealed class ModbusStation : IStation
     internal void Configure(PlcSettings configuration, IReadOnlyDictionary<MonitorPointId, MonitorPoint>? monitorPoints,
         IReadOnlyDictionary<ManualPointId, ManualPoint>? manualOverrides,
         IReadOnlyDictionary<RecipePointId, ushort>? recipePoints, IReadOnlyDictionary<string, InspectionPoint>? inspectionPoints,
-        BarcodePoint? barcodePoint = null, ushort? recordTrigger = null, ScannerTriggerSettings? scannerSettings = null)
+        BarcodePoint? barcodePoint = null, ushort? recordTrigger = null, ScannerTriggerSettings? scannerSettings = null,
+        ushort? timerTrigger = null)
     {
         if (pendingScannerResult is not null)
             throw new InvalidOperationException("扫码结果尚未确认写回，请等待通讯恢复后再切换 PLC。");
@@ -157,6 +160,8 @@ public sealed class ModbusStation : IStation
         recipePlan = writePlan;
         inspectionOverrides = inspection;
         this.recordTrigger = recordTrigger;
+        this.timerTrigger = timerTrigger;
+        testTimer.Reset();
         scannerTrigger = scanning;
         manualPoints = manual;
         feedbackAddresses = FeedbackAddresses(manualPoints);
@@ -269,8 +274,8 @@ public sealed class ModbusStation : IStation
 
     private StationReading Read(IModbusMaster connection)
     {
-        var (test, feedback) = readPlan.Read((address, count) => ReadRegisters(connection, address, count),
-            readHistoryOnCompletion: recordTrigger is null);
+        var (test, feedback) = readPlan.Read((address, count) => ReadRegisters(connection, address, count));
+        test = WithElapsed(connection, test);
         ushort unknown = 0;
         for (int bit = 0; bit < StationActions.Devices.Length; bit++)
         {
@@ -341,7 +346,7 @@ public sealed class ModbusStation : IStation
 
         return ExchangeAsync(connection =>
         {
-            EnsureWritable(ReadIdentity(connection).Stage, false);
+            EnsureWritable(ReadStage(connection), false);
             if (area == PlcTestArea.Coils)
             {
                 if (address == recordTrigger)
@@ -357,12 +362,31 @@ public sealed class ModbusStation : IStation
         }, CancellationToken.None);
     }
 
-    private (TestStage Stage, uint Cycle, ushort Flags) ReadIdentity(IModbusMaster connection) =>
-        PlcLayout.ReadIdentity(ReadRegisters(connection, settings.TelemetryAddress, PlcLayout.TelemetryWords), settings.LowWordFirst);
+    private TestStage ReadStage(IModbusMaster connection) =>
+        readPlan.ReadStage((address, count) => ReadRegisters(connection, address, count));
+
+    // PC-side test timer: runs while the timer trigger coil is 1 and keeps the final value until the next rising edge.
+    private TestSnapshot WithElapsed(IModbusMaster connection, TestSnapshot test)
+    {
+        bool running = timerTrigger is ushort address && connection.ReadCoils(settings.UnitId, address, 1)[0];
+        if (running && !testTimer.IsRunning)
+            testTimer.Restart();
+        else if (!running && testTimer.IsRunning)
+            testTimer.Stop();
+        return test with { Elapsed = testTimer.Elapsed.TotalSeconds };
+    }
+
+    internal Task UpdateTimerTriggerAsync(ushort? address, Action save) => ExchangeAsync(connection =>
+    {
+        save();
+        timerTrigger = address;
+        testTimer.Reset();
+        return true;
+    }, CancellationToken.None);
 
     internal Task UpdateRecordTriggerAsync(ushort? address, Action save) => ExchangeAsync(connection =>
     {
-        if (ReadIdentity(connection).Stage is TestStage.Normal or TestStage.Dust)
+        if (ReadStage(connection) is TestStage.Normal or TestStage.Dust)
             throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改点位。");
 
         _ = InspectionPoints.Validate(settings, inspectionOverrides, manualPoints, address);
@@ -483,6 +507,7 @@ public sealed class ModbusStation : IStation
                 return null;
 
             var (test, _) = readPlan.Read((address, count) => ReadRegisters(connection, address, count), triggered: true);
+            test = WithElapsed(connection, test);
             bool saved;
             try { saved = archive(test); }
             catch (Exception ex) { throw new InvalidOperationException($"数据库保存失败。{ex.Message}", ex); }
@@ -502,8 +527,7 @@ public sealed class ModbusStation : IStation
     private Task UpdateReadPlanAsync(Func<MonitorReadPlan> createPlan, Action save) =>
         ExchangeAsync(connection =>
         {
-            var state = ReadIdentity(connection);
-            if (state.Stage is TestStage.Normal or TestStage.Dust)
+            if (ReadStage(connection) is TestStage.Normal or TestStage.Dust)
                 throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改点位。");
 
             var next = createPlan();
@@ -536,7 +560,7 @@ public sealed class ModbusStation : IStation
         {
             if (InspectionPoints.Resolve(settings, inspectionOverrides, "reset").WriteAddress is not ushort address)
                 throw new InvalidOperationException("PLC 未配置复位线圈。");
-            EnsureWritable(ReadIdentity(connection).Stage, true);
+            EnsureWritable(ReadStage(connection), true);
             if (recordTrigger is ushort trigger && connection.ReadCoils(settings.UnitId, trigger, 1)[0])
                 throw new InvalidOperationException("PLC 正等待历史记录保存，请稍后复位。");
             if (connection.ReadCoils(settings.UnitId, address, 1)[0])
@@ -553,7 +577,7 @@ public sealed class ModbusStation : IStation
             if (!StationActions.IsInspectionSwitch(key)
                 || InspectionPoints.Resolve(settings, inspectionOverrides, key).WriteAddress is not ushort address)
                 throw new InvalidOperationException("该检测开关未配置写入线圈。");
-            EnsureWritable(ReadIdentity(connection).Stage, false);
+            EnsureWritable(ReadStage(connection), false);
             connection.WriteSingleCoil(settings.UnitId, address, enabled);
             return true;
         }, CancellationToken.None);
@@ -567,7 +591,7 @@ public sealed class ModbusStation : IStation
         return ExchangeAsync(connection =>
         {
             var writes = recipePlan.Encode(recipe);
-            EnsureWritable(ReadIdentity(connection).Stage, false);
+            EnsureWritable(ReadStage(connection), false);
             foreach (var (address, words) in writes)
             {
                 try { connection.WriteMultipleRegisters(settings.UnitId, address, words); }
@@ -647,19 +671,38 @@ public static class PlcLayout
         ? ((uint)words[offset + 1] << 16) | words[offset]
         : ((uint)words[offset] << 16) | words[offset + 1];
 
-    internal static (TestStage Stage, uint Cycle, ushort Flags) ReadIdentity(ushort[] words, bool lowWordFirst)
+    internal static uint ReadCycle(ushort[] words, bool lowWordFirst)
     {
-        if (words.Length != TelemetryWords || words[0] != 1 || words[1] > 4)
-            throw new InvalidDataException("PLC 监控区的版本或状态值与配置协议不符。");
-        return ((TestStage)words[1], Unsigned(words, 2, lowWordFirst), words[24]);
+        if (words.Length != TelemetryWords)
+            throw new InvalidDataException("PLC 监控区长度与配置不符。");
+        return Unsigned(words, 2, lowWordFirst);
     }
 
-    internal static (TestSnapshot Test, ushort Feedback) Decode(ushort[] words, bool lowWordFirst,
+    /// <summary>PLC 运行状态码：1 待机、2 运行中、3 测试OK、4 测试NG、5 急停、6 扫码内容错误、7 电压不在范围内。</summary>
+    internal static TestStage StageOf(ushort runState) => runState switch
+    {
+        1 or 3 or 4 => TestStage.Idle,
+        2 => TestStage.Normal,
+        _ => TestStage.Fault
+    };
+
+    internal static string RunStateLabel(ushort runState) => runState switch
+    {
+        1 => "设备待机",
+        2 => "设备运行中",
+        3 => "设备测试OK",
+        4 => "设备测试NG",
+        5 => "急停被按下",
+        6 => "扫码内容错误",
+        7 => "电压不在范围内",
+        _ => $"未知运行状态（{runState}）"
+    };
+
+    internal static (TestSnapshot Test, ushort Feedback) Decode(ushort[] words, bool lowWordFirst, ushort runState,
         Func<MonitorPointId, double?> readPoint, string barcode, bool triggered)
     {
-        var (stage, cycle, flags) = ReadIdentity(words, lowWordFirst);
-        if (triggered)
-            stage = TestStage.Completed;
+        uint cycle = ReadCycle(words, lowWordFirst);
+        var stage = triggered ? TestStage.Completed : StageOf(runState);
         Verdict ReadVerdict(MonitorPointId id, double? code) => code switch
         {
             0 => Verdict.Pending,
@@ -670,8 +713,6 @@ public static class PlcLayout
         Verdict RequiredVerdict(MonitorPointId id) => ReadVerdict(id, readPoint(id));
         Verdict? OptionalVerdict(MonitorPointId id) => readPoint(id) is double code ? ReadVerdict(id, code) : null;
 
-        bool hasNormal = stage is TestStage.Dust or TestStage.Completed || (stage == TestStage.Normal && (flags & 1) != 0);
-        bool hasDust = stage == TestStage.Completed || (stage == TestStage.Dust && (flags & 2) != 0);
         var result = RequiredVerdict(MonitorPointId.Result);
         if (stage == TestStage.Completed && (cycle == 0 || result == Verdict.Pending))
             throw new InvalidDataException("PLC 存档数据须同时提供非零流水号和有效总判定。");
@@ -679,18 +720,18 @@ public static class PlcLayout
         return (new TestSnapshot
         {
             Stage = stage,
+            RunState = runState,
             CycleId = cycle,
-            Elapsed = Unsigned(words, 4, lowWordFirst) / 1000d,
             Voltage = readPoint(MonitorPointId.Voltage),
             NormalVoltage = readPoint(MonitorPointId.NormalVoltage),
             NormalCurrent = readPoint(MonitorPointId.NormalCurrent),
             DustCurrent = readPoint(MonitorPointId.DustCurrent),
-            NormalPower = hasNormal ? readPoint(MonitorPointId.NormalPower) : null,
-            DustPower = hasDust ? readPoint(MonitorPointId.DustPower) : null,
-            PowerDelta = hasNormal && hasDust ? readPoint(MonitorPointId.PowerDelta) : null,
-            NormalSpeed = hasNormal ? readPoint(MonitorPointId.NormalSpeed) : null,
-            DustSpeed = hasDust ? readPoint(MonitorPointId.DustSpeed) : null,
-            SpeedDelta = hasNormal && hasDust ? readPoint(MonitorPointId.SpeedDelta) : null,
+            NormalPower = readPoint(MonitorPointId.NormalPower),
+            DustPower = readPoint(MonitorPointId.DustPower),
+            PowerDelta = readPoint(MonitorPointId.PowerDelta),
+            NormalSpeed = readPoint(MonitorPointId.NormalSpeed),
+            DustSpeed = readPoint(MonitorPointId.DustSpeed),
+            SpeedDelta = readPoint(MonitorPointId.SpeedDelta),
             PowerVerdict = RequiredVerdict(MonitorPointId.PowerVerdict),
             SpeedVerdict = RequiredVerdict(MonitorPointId.SpeedVerdict),
             Result = result,

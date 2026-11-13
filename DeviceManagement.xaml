@@ -79,10 +79,18 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
-        <TextBlock Text="设备管理" Style="{StaticResource Title}" Margin="0,0,0,14"/>
-        <ScrollViewer x:Name="DevicesScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <DockPanel Margin="0,0,0,8">
+            <Button DockPanel.Dock="Right" Content="保存全部配置" Click="SaveAll_Click"
+                    Style="{StaticResource DeviceConnectButton}" IsEnabled="{Binding CanSwitchMode}"
+                    AutomationProperties.Name="保存全部设备配置"/>
+            <TextBlock Text="设备管理" Style="{StaticResource Title}"/>
+        </DockPanel>
+        <TextBlock Grid.Row="1" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,14"
+                   Text="保存前统一校验；主机或 COM 口留空的设备跳过保存并保留原配置。保存不改变当前连接。"/>
+        <ScrollViewer x:Name="DevicesScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto">
             <UniformGrid Columns="3">
                 <Border x:Name="CameraCard" Style="{StaticResource DeviceCard}" Margin="0,0,8,0">
                     <DockPanel LastChildFill="False">
@@ -109,8 +117,7 @@
                             </Grid>
                             <WrapPanel Margin="0,8,0,0">
                                 <Button Content="连接" Style="{StaticResource DeviceConnectButton}" Click="CameraConnect_Click" Margin="0,0,6,0"/>
-                                <Button Content="断开" Click="CameraDisconnect_Click" Margin="0,0,6,0"/>
-                                <Button Content="保存" Click="CameraSave_Click"/>
+                                <Button Content="断开" Click="CameraDisconnect_Click"/>
                             </WrapPanel>
                             <TextBlock x:Name="CameraDetail" Style="{StaticResource DeviceDetail}"/>
                             <Border Style="{StaticResource DeviceDivider}"/>
@@ -170,8 +177,7 @@
                             </Grid>
                             <WrapPanel Margin="0,7,0,0" IsEnabled="{Binding CanSwitchMode}">
                                 <Button Content="连接" Style="{StaticResource DeviceConnectButton}" Click="PlcConnect_Click" Margin="0,0,6,0"/>
-                                <Button Content="断开" Click="PlcDisconnect_Click" Margin="0,0,6,0"/>
-                                <Button Content="保存" Click="PlcSave_Click"/>
+                                <Button Content="断开" Click="PlcDisconnect_Click"/>
                             </WrapPanel>
                             <TextBlock x:Name="PlcDetail" Style="{StaticResource DeviceDetail}"/>
                             <Border Style="{StaticResource DeviceDivider}"/>
@@ -258,8 +264,7 @@
                         </UniformGrid>
                         <WrapPanel Margin="0,8,0,0">
                             <Button Content="连接" Style="{StaticResource DeviceConnectButton}" Click="ScannerConnect_Click" Margin="0,0,6,0"/>
-                            <Button Content="断开" Click="ScannerDisconnect_Click" Margin="0,0,6,0"/>
-                            <Button Content="保存" Click="ScannerSave_Click"/>
+                            <Button Content="断开" Click="ScannerDisconnect_Click"/>
                         </WrapPanel>
                         <TextBlock x:Name="ScannerDetail" Style="{StaticResource DeviceDetail}"/>
                         <Border Style="{StaticResource DeviceDivider}"/>

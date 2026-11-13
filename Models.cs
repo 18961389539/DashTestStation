@@ -98,6 +98,8 @@ public sealed record Recipe
 public sealed record TestSnapshot
 {
     public TestStage Stage { get; init; }
+    /// <summary>PLC 原始运行状态码；模拟站为空。</summary>
+    public ushort? RunState { get; init; }
     public uint CycleId { get; init; }
     public double Elapsed { get; init; }
     public string Barcode { get; init; } = "";

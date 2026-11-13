@@ -35,6 +35,7 @@ internal sealed class PointAddressDialog : Window
     public ushort? RecipeAddress { get; private set; }
     public BarcodePoint? BarcodeResult { get; private set; }
     public ushort? RecordTriggerAddress { get; private set; }
+    public ushort? TimerTriggerAddress { get; private set; }
     public ushort? ResetAddress { get; private set; }
 
     private PointAddressDialog(string title)
@@ -308,11 +309,23 @@ internal sealed class PointAddressDialog : Window
         : this("编辑记录触发线圈")
     {
         ConfigureCoilAddress("触发线圈地址", currentTrigger,
-            "可输入 M11 或零基线圈地址 11。线圈为 1 时采集，存档成功后写 0。留空恢复按测试完成状态存档。",
+            "可输入 M11 或零基线圈地址 11。线圈为 1 时采集，存档成功后写 0。PLC 模式只按此线圈存档，留空则不存档。",
             value => RecordTriggerAddress = value);
         SetPreview(() => string.IsNullOrWhiteSpace(coilAddress!.Text)
-            ? "当前未配置记录触发，按测试完成状态存档。"
+            ? "当前未配置记录触发，PLC 测试结果不会存档。"
             : $"记录触发线圈：{FormatInput(coilAddress)}。");
+    }
+
+    public static PointAddressDialog ForTimerTrigger(ushort? currentTrigger)
+    {
+        var dialog = new PointAddressDialog("编辑计时触发线圈");
+        dialog.ConfigureCoilAddress("计时线圈地址", currentTrigger,
+            "可输入 M、X、Y 等线圈地址。线圈为 1 期间由上位机计时，变 0 时停止并保留最后时间；再次变 1 时清零重新计时。留空不计时。",
+            value => dialog.TimerTriggerAddress = value, readOnly: true);
+        dialog.SetPreview(() => string.IsNullOrWhiteSpace(dialog.coilAddress!.Text)
+            ? "当前未配置计时触发，运行时间保持 0。"
+            : $"计时触发线圈：{FormatInput(dialog.coilAddress)}。");
+        return dialog;
     }
 
     public PointAddressDialog(ushort? currentReset, ushort? defaultReset)
@@ -342,7 +355,8 @@ internal sealed class PointAddressDialog : Window
         });
     }
 
-    private void ConfigureCoilAddress(string label, ushort? current, string description, Action<ushort?> setAddress)
+    private void ConfigureCoilAddress(string label, ushort? current, string description, Action<ushort?> setAddress,
+        bool readOnly = false)
     {
         var address = AddTextField(label, current is ushort point ? PlcAddress.FormatCoil(point) : "", 6);
         coilAddress = address;
@@ -352,7 +366,9 @@ internal sealed class PointAddressDialog : Window
             ushort? result = null;
             if (!string.IsNullOrWhiteSpace(address.Text))
             {
-                if (!PlcAddress.TryParseCoil(address.Text, out ushort value) || PlcAddress.IsPhysicalIo(value))
+                if (!PlcAddress.TryParseCoil(address.Text, out ushort value))
+                    return InvalidField(address, "请输入 M/X/Y/S/HM 编号或零基十进制线圈地址。");
+                if (!readOnly && PlcAddress.IsPhysicalIo(value))
                     return InvalidField(address, "请输入 M/S/HM 编号或可写的零基十进制地址，不能位于 X/Y 区。");
                 result = value;
             }

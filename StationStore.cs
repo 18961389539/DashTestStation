@@ -56,6 +56,7 @@ public sealed class StationStore
     public Dictionary<MonitorPointId, MonitorPoint> LoadMonitorPoints() => LoadPoints<MonitorPointId, MonitorPoint>("monitor_points");
     internal BarcodePoint? LoadBarcodePoint() => LoadSetting<BarcodePoint>("barcode_point");
     internal ushort? LoadRecordTrigger() => LoadSetting<RecordTriggerPoint>("record_trigger")?.Address;
+    internal ushort? LoadTimerTrigger() => LoadSetting<RecordTriggerPoint>("timer_trigger")?.Address;
     internal ScannerTriggerSettings LoadScannerTrigger()
     {
         var settings = LoadSetting<ScannerTriggerSettings>("scanner_trigger") ?? new();
@@ -90,6 +91,7 @@ public sealed class StationStore
 
     public void SaveMonitorPoints(IReadOnlyDictionary<MonitorPointId, MonitorPoint> points) => SavePoints("monitor_points", points);
     internal void SaveRecordTrigger(ushort? address) => SaveSetting("record_trigger", new RecordTriggerPoint(address));
+    internal void SaveTimerTrigger(ushort? address) => SaveSetting("timer_trigger", new RecordTriggerPoint(address));
 
     private sealed record RecordTriggerPoint(ushort? Address);
 

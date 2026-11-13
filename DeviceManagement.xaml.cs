@@ -150,12 +150,58 @@ public partial class DeviceManagement : UserControl
 
     private async void CameraDisconnect_Click(object sender, RoutedEventArgs e) => await RunAsync(StationDevices.Camera.DisconnectAsync);
 
-    private async void CameraSave_Click(object sender, RoutedEventArgs e) => await RunAsync(() =>
+    private async void SaveAll_Click(object sender, RoutedEventArgs e) => await RunAsync(() =>
     {
-        SavePeripherals(peripherals with { Camera = ReadCamera() });
-        SetNotice("相机配置已保存。");
+        SetNotice(SaveAllSettings());
         return Task.CompletedTask;
     });
+
+    internal string SaveAllSettings()
+    {
+        var camera = string.IsNullOrWhiteSpace(CameraHost.Text) ? null : ReadCamera();
+        var scanner = string.IsNullOrWhiteSpace(ScannerPort.Text) ? null : ReadScanner();
+        var plcSettings = string.IsNullOrWhiteSpace(PlcHost.Text) ? null : ReadPlc();
+        plcSettings?.Validate();
+        if (camera is null && scanner is null && plcSettings is null)
+            throw new InvalidOperationException("请至少填写一个设备的主机或 COM 口；未保存任何配置。");
+        if (plcSettings is not null && DataContext is StationView { CanSwitchMode: false })
+            throw new InvalidOperationException("请等待当前操作或测试结束后再保存设备配置。");
+
+        var saved = new List<string>();
+        var skipped = new List<string>();
+        if (camera is null) skipped.Add("相机");
+        if (scanner is null) skipped.Add("扫码枪");
+        if (plcSettings is null) skipped.Add("PLC");
+        try
+        {
+            if (camera is not null || scanner is not null)
+            {
+                SavePeripherals(peripherals with
+                {
+                    Camera = camera ?? peripherals.Camera,
+                    Scanner = scanner ?? peripherals.Scanner
+                });
+                if (camera is not null) saved.Add("相机");
+                if (scanner is not null) saved.Add("扫码枪");
+            }
+            if (plcSettings is not null)
+            {
+                SavePlc(plcSettings);
+                saved.Add("PLC");
+                PlcDetail.Text = "PLC 配置已保存，下次连接时生效。";
+            }
+        }
+        catch (Exception ex)
+        {
+            string completed = saved.Count == 0 ? "无" : string.Join("、", saved);
+            throw new InvalidOperationException($"设备配置保存失败。已保存：{completed}；其他填写的设备未保存，请重试。{ex.Message}", ex);
+        }
+
+        string notice = $"已保存：{string.Join("、", saved)}。配置在下次连接或启动时生效，当前连接不变。";
+        if (skipped.Count > 0)
+            notice += $"未填写的设备已跳过：{string.Join("、", skipped)}（保留原配置）。";
+        return notice;
+    }
 
     private async void CameraSend_Click(object sender, RoutedEventArgs e) => await RunAsync(() =>
     {
@@ -176,13 +222,6 @@ public partial class DeviceManagement : UserControl
     {
         await disconnectPlc();
         PlcDetail.Text = "已切回模拟模式。";
-    });
-
-    private async void PlcSave_Click(object sender, RoutedEventArgs e) => await RunAsync(() =>
-    {
-        SavePlc(ReadPlc());
-        PlcDetail.Text = "PLC 配置已保存，下次连接时生效。";
-        return Task.CompletedTask;
     });
 
     private PlcTestArea SelectedTestArea =>
@@ -269,13 +308,6 @@ public partial class DeviceManagement : UserControl
         byte[] bytes = ScannerCommand.Encode(ScannerSendText.Text, hex, ending);
         await StationDevices.Scanner.SendAsync(bytes);
         SetNotice($"扫码枪指令已发送，共 {bytes.Length} 字节。");
-    });
-
-    private async void ScannerSave_Click(object sender, RoutedEventArgs e) => await RunAsync(() =>
-    {
-        SavePeripherals(peripherals with { Scanner = ReadScanner() });
-        SetNotice("扫码枪配置已保存。");
-        return Task.CompletedTask;
     });
 
     private void RefreshPorts_Click(object sender, RoutedEventArgs e) => RefreshPorts();

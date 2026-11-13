@@ -6,6 +6,8 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Data;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace DustLoadScada;
@@ -35,7 +37,9 @@ public partial class MainWindow : Window
         (MonitorPointId.Result, "总判定结果")
     ];
 
-    private sealed record HistoryPointRow(MonitorPointId? Id, string Label, string Address, string DataType, string Status);
+    private sealed record HistoryPointRow(
+        MonitorPointId? Id, string Group, string Label, string Address, string Offset,
+        string DataType, string Status, string StatusKind);
     private readonly StationView view = new();
     private readonly string dataFolder;
     private readonly FrameworkElement[] pages;
@@ -44,9 +48,13 @@ public partial class MainWindow : Window
     private Dictionary<MonitorPointId, MonitorPoint> monitorPoints = new();
     private BarcodePoint? barcodePoint;
     private ushort? recordTrigger;
+    private ushort? timerTrigger;
     private ScannerTriggerSettings scannerTrigger = new();
     private Dictionary<ManualPointId, ManualPoint> manualPoints = new();
     private Dictionary<RecipePointId, ushort> recipePoints = new();
+    private HistoryPointRow[] historyPointRows = [];
+    private DispatcherTimer? historyPointHighlightTimer;
+    private DataGridRow? highlightedHistoryPointRow;
     private Dictionary<string, InspectionPoint> inspectionPoints = new();
     private Button? heldManualButton;
     private Key heldManualKey;
@@ -103,6 +111,7 @@ public partial class MainWindow : Window
             monitorPoints = store.LoadMonitorPoints();
             barcodePoint = store.LoadBarcodePoint();
             recordTrigger = store.LoadRecordTrigger();
+            timerTrigger = store.LoadTimerTrigger();
             scannerTrigger = store.LoadScannerTrigger();
             manualPoints = store.LoadManualPoints();
             recipePoints = store.LoadRecipePoints();
@@ -528,7 +537,7 @@ public partial class MainWindow : Window
             NotifyArchived(station);
     }
 
-    private bool UsesCompletionArchive(IStation station) => station is not ModbusStation || !recordTrigger.HasValue;
+    private bool UsesCompletionArchive(IStation station) => station is not ModbusStation;
 
     private void NotifyArchived(IStation station, string? notice = null)
     {
@@ -616,7 +625,7 @@ public partial class MainWindow : Window
                 {
                     settings.Validate();
                     StationDevices.Plc.Configure(settings, monitorPoints, manualPoints, recipePoints,
-                        inspectionPoints, barcodePoint, recordTrigger, scannerTrigger);
+                        inspectionPoints, barcodePoint, recordTrigger, scannerTrigger, timerTrigger);
                 }
             }
             catch
@@ -838,7 +847,9 @@ public partial class MainWindow : Window
                     double decoded = definition.Decode(point.DataType, words, settings.LowWordFirst);
                     return $"只读成功：原始值 [{string.Join(", ", words)}]（{string.Join(", ", words.Select(word => $"0x{word:X4}"))}）；"
                         + $"解析值 {decoded.ToString("0.####", CultureInfo.InvariantCulture)}"
-                        + (definition.ScaledUnit is { } unit ? $" {unit}" : "") + "。";
+                        + (definition.ScaledUnit is { } unit ? $" {unit}" : "")
+                        + (id == MonitorPointId.RunState && decoded is >= 0 and <= ushort.MaxValue
+                            ? $"（{PlcLayout.RunStateLabel((ushort)decoded)}）" : "") + "。";
                 });
             dialog.SetSaveAction(async () =>
             {
@@ -862,9 +873,13 @@ public partial class MainWindow : Window
 
                 monitorPoints = updated;
                 if (HistoryAddressTab.IsSelected)
+                {
                     RefreshHistoryPoints();
+                    HighlightHistoryPoint(definition.Label);
+                }
                 view.Notice = point is null ? $"{definition.Label}已取消采集。"
-                    : $"{definition.Label}已保存 · 地址 {point.Address} · {point.DataType}";
+                    : $"{definition.Label}已保存 · {PlcAddress.FormatRegisterRange(point.Address, point.WordCount)}"
+                        + $"（零基偏移 {FormatOffset(point.Address, point.WordCount)}）· {point.DataType}";
             });
             dialog.ShowDialog();
         });
@@ -1278,27 +1293,97 @@ public partial class MainWindow : Window
         {
             var settings = MonitorSettings();
             HistoryRegisterArea.Text = settings.UseInputRegisters ? "输入寄存器 · FC04" : "保持寄存器 · FC03";
+            HistoryArchiveWarning.Visibility = recordTrigger.HasValue ? Visibility.Collapsed : Visibility.Visible;
+            ClearHistoryPointHighlight();
             var selectedPoint = HistoryAddressGrid.SelectedValue;
             var barcode = barcodePoint ?? BarcodePoint.DefaultAt(settings.TelemetryAddress);
-            var barcodeRow = new HistoryPointRow(null, "二维码", barcode.Address.ToString(CultureInfo.InvariantCulture),
-                $"UTF-8 · {barcode.WordCount} 字", barcodePoint is null ? "默认" : "已配置");
-            var triggerRow = new HistoryPointRow(null, RecordTriggerLabel,
+            var barcodeRow = new HistoryPointRow(null, "01 · 控制与存档", "二维码",
+                PlcAddress.FormatRegisterRange(barcode.Address, barcode.WordCount),
+                FormatOffset(barcode.Address, barcode.WordCount), $"UTF-8 · {barcode.WordCount} 个寄存器",
+                barcodePoint is null ? "默认" : "自定义", barcodePoint is null ? "Default" : "Custom");
+            var triggerRow = new HistoryPointRow(null, "01 · 控制与存档", RecordTriggerLabel,
                 recordTrigger is ushort trigger ? PlcAddress.FormatCoil(trigger) : "—",
-                "线圈 · Bool", recordTrigger.HasValue ? "已配置" : "按测试完成记录");
-            HistoryAddressGrid.ItemsSource = HistoryFields.Select(field =>
+                recordTrigger is ushort offset ? offset.ToString(CultureInfo.InvariantCulture) : "—",
+                "线圈 · Bool · FC01/FC05", recordTrigger.HasValue ? "自定义" : "未配置",
+                recordTrigger.HasValue ? "Custom" : "Missing");
+            historyPointRows = HistoryFields.Select(field =>
             {
                 var custom = monitorPoints.GetValueOrDefault(field.Id);
                 var point = custom ?? MonitorPointDefinition.For(field.Id).DefaultAt(settings.TelemetryAddress);
-                return new HistoryPointRow(field.Id, field.Label, point?.Address.ToString(CultureInfo.InvariantCulture) ?? "—",
-                    point?.DataType.ToString() ?? "—", custom is not null ? "已配置" : point is not null ? "默认" : "未配置");
+                string group = field.Id switch
+                {
+                    MonitorPointId.Result => "04 · 判定结果",
+                    MonitorPointId.DustCurrent or MonitorPointId.DustCurrentVerdict
+                        or MonitorPointId.DustPower or MonitorPointId.DustPowerVerdict
+                        or MonitorPointId.DustSpeed or MonitorPointId.DustSpeedVerdict => "03 · 灰尘测试",
+                    _ => "02 · 正常测试"
+                };
+                return new HistoryPointRow(field.Id, group, field.Label,
+                    point is MonitorPoint configured ? PlcAddress.FormatRegisterRange(configured.Address, configured.WordCount) : "—",
+                    point is MonitorPoint configuredOffset ? FormatOffset(configuredOffset.Address, configuredOffset.WordCount) : "—",
+                    point?.DataType.ToString() ?? "—",
+                    custom is not null ? "自定义" : point is not null ? "默认" : "未配置",
+                    custom is not null ? "Custom" : point is not null ? "Default" : "Missing");
             }).Prepend(barcodeRow).Prepend(triggerRow).ToArray();
-            HistoryAddressGrid.SelectedValue = selectedPoint;
+            var collectionView = CollectionViewSource.GetDefaultView(historyPointRows);
+            collectionView.GroupDescriptions.Clear();
+            collectionView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(HistoryPointRow.Group)));
+            HistoryAddressGrid.ItemsSource = collectionView;
+            if (selectedPoint is not null)
+                HistoryAddressGrid.SelectedValue = selectedPoint;
         }
         catch (Exception ex)
         {
             HistoryRegisterArea.Text = "PLC 配置读取失败";
             HistoryAddressGrid.ItemsSource = null;
             view.Notice = ex.Message;
+        }
+    }
+
+    private static string FormatOffset(int address, int wordCount) =>
+        wordCount == 1
+            ? address.ToString(CultureInfo.InvariantCulture)
+            : $"{address.ToString(CultureInfo.InvariantCulture)}–{(address + wordCount - 1).ToString(CultureInfo.InvariantCulture)}";
+
+    private void HighlightHistoryPoint(string label)
+    {
+        var point = historyPointRows.FirstOrDefault(row => row.Label == label);
+        if (point is null)
+            return;
+
+        HistoryAddressGrid.SelectedValue = label;
+        HistoryAddressGrid.ScrollIntoView(point);
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (HistoryAddressGrid.ItemContainerGenerator.ContainerFromItem(point) is not DataGridRow row)
+                return;
+
+            ClearHistoryPointHighlight();
+            highlightedHistoryPointRow = row;
+            row.Background = (Brush)FindResource("Selected");
+            row.BorderBrush = (Brush)FindResource("Accent");
+            row.BorderThickness = new Thickness(1, 0, 1, 1);
+            historyPointHighlightTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
+            {
+                Interval = TimeSpan.FromSeconds(1.6)
+            };
+            historyPointHighlightTimer.Tick += HistoryPointHighlightTimer_Tick;
+            historyPointHighlightTimer.Start();
+        }), DispatcherPriority.Loaded);
+    }
+
+    private void HistoryPointHighlightTimer_Tick(object? sender, EventArgs e) => ClearHistoryPointHighlight();
+
+    private void ClearHistoryPointHighlight()
+    {
+        historyPointHighlightTimer?.Stop();
+        historyPointHighlightTimer = null;
+        if (highlightedHistoryPointRow is not null)
+        {
+            highlightedHistoryPointRow.ClearValue(DataGridRow.BackgroundProperty);
+            highlightedHistoryPointRow.ClearValue(DataGridRow.BorderBrushProperty);
+            highlightedHistoryPointRow.ClearValue(DataGridRow.BorderThicknessProperty);
+            highlightedHistoryPointRow = null;
         }
     }
 
@@ -1348,8 +1433,46 @@ public partial class MainWindow : Window
                 recordTrigger = updated;
                 storageError = null;
                 RefreshHistoryPoints();
+                HighlightHistoryPoint(RecordTriggerLabel);
                 view.Notice = updated is ushort address ? $"记录触发已设为 {PlcAddress.FormatCoil(address)}。"
-                    : "记录触发已清除，恢复按测试完成状态存档。";
+                    : "记录触发已清除，PLC 测试结果不再存档。";
+            });
+            dialog.ShowDialog();
+        });
+    }
+
+    private async void EditTimerTrigger_Click(object sender, RoutedEventArgs e)
+    {
+        if (!view.CanEditMonitorPoints || closing)
+            return;
+        await PerformAsync(async () =>
+        {
+            var dialog = PointAddressDialog.ForTimerTrigger(timerTrigger);
+            dialog.Owner = this;
+            var station = view.Station as ModbusStation;
+            dialog.SetCommunicationInfo("线圈区 · FC01 只读；上位机只读取该线圈，不会写入。");
+            if (station is not null)
+                dialog.SetReadTest(async () =>
+                {
+                    ushort selected = dialog.TimerTriggerAddress
+                        ?? throw new InvalidOperationException("计时触发地址未配置。");
+                    var values = await station.ReadTestAsync(PlcTestArea.Coils, selected, 1);
+                    return $"只读成功：线圈 {PlcAddress.FormatCoil(selected)}={values[0]}。";
+                });
+            dialog.SetSaveAction(async () =>
+            {
+                if (dialog.TimerTriggerAddress == timerTrigger)
+                    return;
+
+                var updated = dialog.TimerTriggerAddress;
+                if (station is not null)
+                    await station.UpdateTimerTriggerAsync(updated, () => store.SaveTimerTrigger(updated));
+                else
+                    store.SaveTimerTrigger(updated);
+
+                timerTrigger = updated;
+                view.Notice = updated is ushort address ? $"计时触发已设为 {PlcAddress.FormatCoil(address)}。"
+                    : "计时触发已清除，运行时间不再计时。";
             });
             dialog.ShowDialog();
         });
@@ -1396,7 +1519,9 @@ public partial class MainWindow : Window
 
                 barcodePoint = updated;
                 RefreshHistoryPoints();
-                view.Notice = $"二维码点位已保存 · 地址 {point.Address} · {point.WordCount} 个寄存器";
+                HighlightHistoryPoint("二维码");
+                view.Notice = $"二维码点位已保存 · {PlcAddress.FormatRegisterRange(point.Address, point.WordCount)}"
+                    + $"（零基偏移 {FormatOffset(point.Address, point.WordCount)}）· {point.WordCount} 个寄存器";
             });
             dialog.ShowDialog();
         });

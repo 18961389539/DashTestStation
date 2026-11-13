@@ -23,6 +23,41 @@ public sealed class ScannerTriggerTests
     }
 
     [Theory]
+    [InlineData(1, DustLoadScada.TestStage.Idle)]
+    [InlineData(2, DustLoadScada.TestStage.Normal)]
+    [InlineData(3, DustLoadScada.TestStage.Idle)]
+    [InlineData(4, DustLoadScada.TestStage.Idle)]
+    [InlineData(5, DustLoadScada.TestStage.Fault)]
+    [InlineData(6, DustLoadScada.TestStage.Fault)]
+    [InlineData(7, DustLoadScada.TestStage.Fault)]
+    [InlineData(0, DustLoadScada.TestStage.Fault)]
+    public void RunStateCodesMapToStages(ushort code, DustLoadScada.TestStage expected) =>
+        Assert.Equal(expected, DustLoadScada.PlcLayout.StageOf(code));
+
+    [Fact]
+    public void RunStateIsReadFromItsOwnAddressWithoutVersionCheck()
+    {
+        var settings = new DustLoadScada.PlcSettings();
+        var memory = new ushort[65536];
+        memory[settings.TelemetryAddress] = 0;
+        memory[500] = 4;
+        var overrides = new Dictionary<DustLoadScada.MonitorPointId, DustLoadScada.MonitorPoint>
+        {
+            [DustLoadScada.MonitorPointId.RunState] = new(500, DustLoadScada.RegisterDataType.Int16)
+        };
+        var plan = new DustLoadScada.MonitorReadPlan(settings, overrides);
+        ushort[] Read(ushort address, ushort count) => memory.AsSpan(address, count).ToArray();
+
+        var (test, _) = plan.Read(Read);
+
+        Assert.Equal((ushort)4, test.RunState);
+        Assert.Equal(DustLoadScada.TestStage.Idle, test.Stage);
+        Assert.Equal(DustLoadScada.TestStage.Idle, plan.ReadStage(Read));
+        memory[500] = 2;
+        Assert.Equal(DustLoadScada.TestStage.Normal, plan.ReadStage(Read));
+    }
+
+    [Theory]
     [InlineData("ABmodel-001", 3, 5)]
     [InlineData("ABMO-001", 3, 5)]
     [InlineData("ABMODEL-001", 3, 4)]

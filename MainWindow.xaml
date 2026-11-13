@@ -166,9 +166,16 @@
                     <Border Background="{StaticResource Selected}" CornerRadius="8" Padding="15,11" BorderThickness="1"
                             BorderBrush="{StaticResource Accent}" Margin="0,0,0,13">
                         <DockPanel>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource EditIcon}" Click="EditTimerTrigger_Click"
+                                    VerticalAlignment="Center" Margin="6,0,0,0" AutomationProperties.Name="编辑计时触发地址"/>
                             <TextBlock DockPanel.Dock="Right" FontFamily="Consolas" FontSize="21" FontWeight="SemiBold" Foreground="{StaticResource Accent}"
                                        Text="{Binding Snapshot.Elapsed, StringFormat={}{0:0.0} s}" Margin="12,0,0,0"/>
-                            <TextBlock Text="{Binding StageLabel}" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource Accent}"/>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding StageLabel}" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource Accent}"
+                                           VerticalAlignment="Center"/>
+                                <Button Style="{StaticResource PointEdit}" CommandParameter="{x:Static local:MonitorPointId.RunState}"
+                                        VerticalAlignment="Center" Margin="8,0,0,0" AutomationProperties.Name="编辑运行状态地址"/>
+                            </StackPanel>
                         </DockPanel>
                     </Border>
 
@@ -783,22 +790,80 @@
                             </Grid.RowDefinitions>
                             <Border Style="{StaticResource Panel}" Padding="12" Margin="0,0,0,12">
                                 <StackPanel>
-                                    <TextBlock x:Name="HistoryRegisterArea" FontWeight="SemiBold"/>
-                                    <TextBlock Text="地址从 0 开始。判定值为 0 待判定、1 合格、2 不合格。管理员可在测试结束后编辑。"
+                                    <TextBlock x:Name="HistoryRegisterArea" FontWeight="SemiBold" Foreground="{StaticResource Accent}"/>
+                                    <TextBlock Text="寄存器地址同时显示 PLC 符号地址和零基偏移；32 位值占用两个连续寄存器。判定值：0 待判定、1 合格、2 不合格。记录触发为独立线圈区（FC01 读取 / FC05 写入）。"
                                                Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                                    <TextBlock x:Name="HistoryArchiveWarning" Text="未配置记录触发：PLC 测试结果不会存档。"
+                                               Foreground="{StaticResource Red}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                    <TextBlock Text="{Binding MonitorPointEditHint}" Style="{StaticResource MutedText}"
+                                               TextWrapping="Wrap" Margin="0,6,0,0" AutomationProperties.LiveSetting="Polite"/>
                                 </StackPanel>
                             </Border>
                             <DataGrid x:Name="HistoryAddressGrid" Grid.Row="1" AutomationProperties.Name="历史采集点位"
-                                      CanUserSortColumns="False" CanUserReorderColumns="False" SelectedValuePath="Label">
+                                      CanUserSortColumns="False" CanUserReorderColumns="False" SelectedValuePath="Label"
+                                      RowHeight="40">
+                                <DataGrid.GroupStyle>
+                                    <GroupStyle>
+                                        <GroupStyle.HeaderTemplate>
+                                            <DataTemplate>
+                                                <Border Background="{StaticResource Raised}" BorderBrush="{StaticResource Line}"
+                                                        BorderThickness="0,0,0,1" Padding="8,7" Margin="-5,0,-5,0">
+                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                                               Foreground="{StaticResource Accent}"/>
+                                                </Border>
+                                            </DataTemplate>
+                                        </GroupStyle.HeaderTemplate>
+                                    </GroupStyle>
+                                </DataGrid.GroupStyle>
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="采集项目" Width="2*" Binding="{Binding Label}"/>
-                                    <DataGridTextColumn Header="Modbus 地址" Width="*" Binding="{Binding Address}"/>
-                                    <DataGridTextColumn Header="数据类型" Width="*" Binding="{Binding DataType}"/>
-                                    <DataGridTextColumn Header="配置状态" Width="*" Binding="{Binding Status}"/>
-                                    <DataGridTemplateColumn Header="操作" Width="100">
+                                    <DataGridTextColumn Header="PLC 符号地址" Width="1.35*" Binding="{Binding Address}">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="FontFamily" Value="Consolas"/>
+                                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="零基偏移" Width="1.2*" Binding="{Binding Offset}">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="FontFamily" Value="Consolas"/>
+                                                <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="数据类型" Width="1.35*" Binding="{Binding DataType}"/>
+                                    <DataGridTemplateColumn Header="配置状态" Width="1.1*">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
-                                                <Button Content="编辑" Click="EditHistoryPoint_Click" Padding="12,2" MinHeight="26"
+                                                <Border x:Name="StatusBadge" Background="{StaticResource Raised}"
+                                                        BorderBrush="{StaticResource Line}" BorderThickness="1"
+                                                        CornerRadius="10" Padding="8,2" HorizontalAlignment="Left">
+                                                    <TextBlock x:Name="StatusText" Text="{Binding Status}" Foreground="{StaticResource Muted}"/>
+                                                </Border>
+                                                <DataTemplate.Triggers>
+                                                    <DataTrigger Binding="{Binding StatusKind}" Value="Default">
+                                                        <Setter TargetName="StatusBadge" Property="Background" Value="{StaticResource Selected}"/>
+                                                        <Setter TargetName="StatusBadge" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                                        <Setter TargetName="StatusText" Property="Foreground" Value="{StaticResource Accent}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding StatusKind}" Value="Custom">
+                                                        <Setter TargetName="StatusBadge" Property="BorderBrush" Value="{StaticResource Green}"/>
+                                                        <Setter TargetName="StatusText" Property="Foreground" Value="{StaticResource Green}"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding StatusKind}" Value="Missing">
+                                                        <Setter TargetName="StatusBadge" Property="BorderBrush" Value="{StaticResource Red}"/>
+                                                        <Setter TargetName="StatusText" Property="Foreground" Value="{StaticResource Red}"/>
+                                                    </DataTrigger>
+                                                </DataTemplate.Triggers>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="操作" Width="92">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="编辑" Click="EditHistoryPoint_Click" Padding="12,3" MinHeight="32"
                                                         HorizontalAlignment="Center" AutomationProperties.Name="{Binding Label, StringFormat=编辑{0}}"
                                                         IsEnabled="{Binding DataContext.CanEditMonitorPoints, RelativeSource={RelativeSource AncestorType=DataGrid}}"/>
                                             </DataTemplate>
@@ -867,60 +932,194 @@
             <local:DeviceManagement x:Name="DevicesPage" Visibility="Collapsed"/>
 
             <Grid x:Name="SystemPage" Visibility="Collapsed">
+                <Grid.Resources>
+                    <Style x:Key="SystemFieldLabel" TargetType="Label">
+                        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                        <Setter Property="FontWeight" Value="SemiBold"/>
+                        <Setter Property="Padding" Value="0"/>
+                    </Style>
+                    <Style x:Key="SystemField" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+                        <Setter Property="MinHeight" Value="38"/>
+                        <Setter Property="FontFamily" Value="Consolas"/>
+                        <Setter Property="FontSize" Value="16"/>
+                        <Setter Property="Padding" Value="10,6"/>
+                        <Setter Property="IsEnabled" Value="{Binding CanEditSystemSettings}"/>
+                    </Style>
+                    <Style x:Key="SystemHint" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                        <Setter Property="FontSize" Value="12"/>
+                        <Setter Property="TextWrapping" Value="Wrap"/>
+                        <Setter Property="Margin" Value="0,5,0,0"/>
+                    </Style>
+                    <Style x:Key="SystemError" TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{StaticResource Red}"/>
+                        <Setter Property="TextWrapping" Value="Wrap"/>
+                        <Setter Property="Margin" Value="0,10,0,0"/>
+                        <Style.Triggers>
+                            <Trigger Property="Text" Value="">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Grid.Resources>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
-                <TextBlock Text="系统设置" Style="{StaticResource Title}" Margin="0,0,0,14"/>
-                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                    <Border Style="{StaticResource Panel}" Width="520" Padding="23" HorizontalAlignment="Left" VerticalAlignment="Top">
-                        <StackPanel>
-                            <TextBlock Text="运行时间统计" Style="{StaticResource Section}" Margin="0,0,0,12"/>
-                            <Label Content="运行状态线圈地址" Target="{Binding ElementName=RuntimeAddress}"
-                                   Foreground="{StaticResource Text}" FontWeight="SemiBold" Padding="0,0,0,5"/>
-                            <TextBox x:Name="RuntimeAddress" MaxLength="6" IsEnabled="{Binding CanEditSystemSettings}"
-                                     AutomationProperties.Name="运行状态线圈地址"/>
-                            <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,8,0,0"
-                                       Text="可输入 M10、Y10 或从 0 开始的十进制线圈地址。连接 PLC 后，线圈为 1 时累加运行时间，结果显示在状态监控页。留空则不统计。"/>
-                            <TextBlock x:Name="RuntimeSettingsError" Foreground="{StaticResource Red}" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-                                <Button Content="累计时间清零" Click="ResetRuntime_Click" IsEnabled="{Binding CanEditSystemSettings}" Margin="0,0,8,0"/>
-                                <Button Content="保存设置" Click="SaveRuntimeSettings_Click" IsEnabled="{Binding CanEditSystemSettings}"
-                                        Style="{StaticResource Primary}"/>
-                            </StackPanel>
-                            <Separator Margin="0,20,0,16"/>
-                            <TextBlock Text="扫码触发与写回" Style="{StaticResource Section}" Margin="0,0,0,12"/>
-                            <Label Content="扫码触发线圈地址" Target="{Binding ElementName=ScannerTriggerAddress}"
-                                   Foreground="{StaticResource Text}" FontWeight="SemiBold" Padding="0,0,0,5"/>
-                            <TextBox x:Name="ScannerTriggerAddress" MaxLength="12" IsEnabled="{Binding CanEditSystemSettings}"
-                                     AutomationProperties.Name="扫码触发线圈地址"/>
-                            <Label Content="二维码存储寄存器（32 字）" Target="{Binding ElementName=ScannerBarcodeAddress}"
-                                   Foreground="{StaticResource Text}" FontWeight="SemiBold" Padding="0" Margin="0,10,0,5"/>
-                            <TextBox x:Name="ScannerBarcodeAddress" MaxLength="8" IsEnabled="{Binding CanEditSystemSettings}"
-                                     AutomationProperties.Name="二维码存储寄存器地址"/>
-                            <Label Content="比对结果寄存器" Target="{Binding ElementName=ScannerVerdictAddress}"
-                                   Foreground="{StaticResource Text}" FontWeight="SemiBold" Padding="0" Margin="0,10,0,5"/>
-                            <TextBox x:Name="ScannerVerdictAddress" MaxLength="8" IsEnabled="{Binding CanEditSystemSettings}"
-                                     AutomationProperties.Name="扫码比对结果寄存器地址"/>
-                            <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,8,0,0"
-                                       Text="Y11 为默认触发地址；留空可停用扫码触发。读到触发后启动扫码，按当前配方的开始序号和对比长度与产品型号比较（区分大小写；长度为 0 时采用产品型号长度）。二维码以 UTF-8 写入 32 个连续保持寄存器（高字节在前）；比对结果写入地址对应 1=匹配、2=不匹配。两项写入成功后将触发线圈清零；失败会保留扫码结果并重试。"/>
-                            <TextBlock x:Name="ScannerSettingsError" Foreground="{StaticResource Red}" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                            <Button Content="保存扫码设置" Click="SaveScannerSettings_Click"
-                                    IsEnabled="{Binding CanEditSystemSettings}" Style="{StaticResource Primary}"
-                                    HorizontalAlignment="Right" Margin="0,12,0,0"/>
-                            <TextBlock Text="请登录管理员账号修改系统设置。" Margin="0,10,0,0">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsAdministrator}" Value="True">
-                                                <Setter Property="Visibility" Value="Collapsed"/>
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
-                        </StackPanel>
+                <DockPanel Margin="0,0,0,16">
+                    <Border DockPanel.Dock="Right" Background="{StaticResource Raised}" BorderBrush="{StaticResource Line}"
+                            BorderThickness="1" CornerRadius="6" Padding="12,6" VerticalAlignment="Top" Margin="16,3,0,0">
+                        <TextBlock Foreground="{StaticResource Muted}" FontSize="12">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Text" Value="只读浏览"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsAdministrator}" Value="True">
+                                            <Setter Property="Text" Value="管理员"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
                     </Border>
+                    <StackPanel>
+                        <TextBlock Text="系统设置" Style="{StaticResource Title}"/>
+                        <TextBlock Text="统计与扫码分组独立保存，配置保存在本机数据目录。" Style="{StaticResource SystemHint}"/>
+                    </StackPanel>
+                </DockPanel>
+                <ScrollViewer x:Name="SystemSettingsScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel>
+                        <Border x:Name="SystemReadOnlyNotice" Background="{StaticResource Raised}"
+                                BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8"
+                                Padding="14,10" Margin="0,0,0,14">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsAdministrator}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="前往权限管理" Click="Navigate_Click" CommandParameter="5"
+                                        IsEnabled="{Binding NotBusy}" Margin="16,0,0,0" Padding="12,5" MinHeight="32"/>
+                                <StackPanel>
+                                    <TextBlock Text="当前为只读模式" FontWeight="SemiBold" Foreground="{StaticResource Accent}"/>
+                                    <TextBlock Text="登录管理员后可修改地址、保存设置或清零累计时间。" Style="{StaticResource SystemHint}"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+                        <Grid x:Name="SystemSettingsCards">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="0.95*"/>
+                                <ColumnDefinition Width="16"/>
+                                <ColumnDefinition Width="1.65*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="RuntimeSettingsCard" Style="{StaticResource Panel}" Padding="20" VerticalAlignment="Top">
+                                <StackPanel>
+                                    <TextBlock Text="运行时间统计" Style="{StaticResource Section}"/>
+                                    <TextBlock Text="按运行线圈状态累计设备运行时长。" Style="{StaticResource SystemHint}" Margin="0,5,0,16"/>
+                                    <Border Background="{StaticResource Raised}" CornerRadius="6" Padding="14" Margin="0,0,0,18">
+                                        <StackPanel>
+                                            <TextBlock Text="累计运行时间" Style="{StaticResource MutedText}" FontSize="12"/>
+                                            <TextBlock Text="{Binding RuntimeLabel}" FontFamily="Consolas" FontSize="32"
+                                                       FontWeight="SemiBold" Foreground="{StaticResource Accent}" Margin="0,6,0,0"/>
+                                            <TextBlock Text="{Binding RuntimeStatus}" Style="{StaticResource SystemHint}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Label Content="运行状态线圈地址" Target="{Binding ElementName=RuntimeAddress}"
+                                           Style="{StaticResource SystemFieldLabel}" Margin="0,0,0,7"/>
+                                    <TextBox x:Name="RuntimeAddress" MaxLength="6" Style="{StaticResource SystemField}"
+                                             AutomationProperties.Name="运行状态线圈地址"/>
+                                    <TextBlock Text="例如 M10、Y10、X0、S0、HM0 或零基十进制地址；留空停用统计。"
+                                               Style="{StaticResource SystemHint}"/>
+                                    <TextBlock x:Name="RuntimeSettingsError" Text="" Style="{StaticResource SystemError}"/>
+                                    <Border Background="{StaticResource Input}" CornerRadius="6" Padding="12" Margin="0,16,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="计时规则" FontWeight="SemiBold" FontSize="12"/>
+                                            <TextBlock Text="线圈为 1 时累加，为 0 时暂停。通讯中断与模拟模式不计时，停用统计不会删除累计值。"
+                                                       Style="{StaticResource SystemHint}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <WrapPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+                                        <Button Content="累计时间清零" Click="ResetRuntime_Click" IsEnabled="{Binding CanEditSystemSettings}"
+                                                Foreground="{StaticResource Red}" Padding="12,7" Margin="0,0,8,0"/>
+                                        <Button Content="保存统计设置" Click="SaveRuntimeSettings_Click" IsEnabled="{Binding CanEditSystemSettings}"
+                                                Style="{StaticResource Primary}" Padding="12,7"/>
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                            <Border x:Name="ScannerSettingsCard" Grid.Column="2" Style="{StaticResource Panel}" Padding="20" VerticalAlignment="Top">
+                                <StackPanel>
+                                    <TextBlock Text="扫码触发与写回" Style="{StaticResource Section}"/>
+                                    <TextBlock Text="触发扫码 → 按配方比对 → 写回 PLC → 清零触发" Style="{StaticResource SystemHint}" Margin="0,5,0,18"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="180"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <StackPanel Margin="0,0,16,14">
+                                            <Label Content="扫码触发线圈" Target="{Binding ElementName=ScannerTriggerAddress}"
+                                                   Style="{StaticResource SystemFieldLabel}"/>
+                                            <TextBlock Text="默认 Y11，留空停用触发" Style="{StaticResource SystemHint}"/>
+                                        </StackPanel>
+                                        <TextBox x:Name="ScannerTriggerAddress" Grid.Column="1" MaxLength="12"
+                                                 Style="{StaticResource SystemField}" VerticalAlignment="Top" Margin="0,0,0,14"
+                                                 AutomationProperties.Name="扫码触发线圈地址"/>
+                                        <StackPanel Grid.Row="1" Margin="0,0,16,14">
+                                            <Label Content="二维码写回地址" Target="{Binding ElementName=ScannerBarcodeAddress}"
+                                                   Style="{StaticResource SystemFieldLabel}"/>
+                                            <TextBlock Text="默认 D4000，连续 32 字 / 64 字节" Style="{StaticResource SystemHint}"/>
+                                        </StackPanel>
+                                        <TextBox x:Name="ScannerBarcodeAddress" Grid.Row="1" Grid.Column="1" MaxLength="8"
+                                                 Style="{StaticResource SystemField}" VerticalAlignment="Top" Margin="0,0,0,14"
+                                                 AutomationProperties.Name="二维码存储寄存器地址"/>
+                                        <StackPanel Grid.Row="2" Margin="0,0,16,0">
+                                            <Label Content="比对结果写回地址" Target="{Binding ElementName=ScannerVerdictAddress}"
+                                                   Style="{StaticResource SystemFieldLabel}"/>
+                                            <TextBlock Text="默认 D379，单个保持寄存器" Style="{StaticResource SystemHint}"/>
+                                        </StackPanel>
+                                        <TextBox x:Name="ScannerVerdictAddress" Grid.Row="2" Grid.Column="1" MaxLength="8"
+                                                 Style="{StaticResource SystemField}" VerticalAlignment="Top"
+                                                 AutomationProperties.Name="扫码比对结果寄存器地址"/>
+                                    </Grid>
+                                    <TextBlock x:Name="ScannerSettingsError" Text="" Style="{StaticResource SystemError}"/>
+                                    <Border Background="{StaticResource Input}" CornerRadius="6" Padding="12" Margin="0,18,0,0">
+                                        <StackPanel>
+                                            <WrapPanel>
+                                                <TextBlock Text="1 · 匹配" Foreground="{StaticResource Green}" FontWeight="SemiBold" Margin="0,0,20,0"/>
+                                                <TextBlock Text="2 · 不匹配" Foreground="{StaticResource Red}" FontWeight="SemiBold"/>
+                                            </WrapPanel>
+                                            <TextBlock Text="二维码与比对结果均写入成功后才清零触发。写回失败会重试同一条码，不重复扫码。"
+                                                       Style="{StaticResource SystemHint}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Expander x:Name="ScannerSettingsHelp" Header="查看二维码比对与编码说明" IsExpanded="False"
+                                              Foreground="{StaticResource Muted}" FontSize="12" Margin="0,14,0,0">
+                                        <StackPanel Margin="6,10,6,0">
+                                            <TextBlock Text="{Binding ActiveRecipeLabel, StringFormat=当前启用配方：{0}}"
+                                                       Foreground="{StaticResource Text}" TextWrapping="Wrap"/>
+                                            <TextBlock Text="{Binding ActiveRecipe.Model, StringFormat=产品型号：{0}}"
+                                                       Style="{StaticResource SystemHint}"/>
+                                            <TextBlock Text="从开始序号（从 1 开始）截取对比长度，与完整产品型号区分大小写比较；对比长度为 0 时采用产品型号长度。"
+                                                       Style="{StaticResource SystemHint}"/>
+                                            <TextBlock Text="二维码采用 UTF-8 编码，每字高字节在前，不足补零。超过 64 字节会报错，不截断；扫码等待超时或通讯失败会提示并重试。"
+                                                       Style="{StaticResource SystemHint}"/>
+                                        </StackPanel>
+                                    </Expander>
+                                    <Button Content="保存扫码设置" Click="SaveScannerSettings_Click"
+                                            IsEnabled="{Binding CanEditSystemSettings}" Style="{StaticResource Primary}"
+                                            HorizontalAlignment="Right" Margin="0,18,0,0" Padding="14,7"/>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </StackPanel>
                 </ScrollViewer>
             </Grid>
         </Grid>
