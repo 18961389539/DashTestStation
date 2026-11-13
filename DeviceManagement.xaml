@@ -1,0 +1,307 @@
+<UserControl x:Class="DustLoadScada.DeviceManagement"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <Style x:Key="DeviceFieldLabel" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+            <Setter Property="Margin" Value="0,0,0,4"/>
+        </Style>
+        <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="7,3"/>
+        </Style>
+        <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+            <Setter Property="MinHeight" Value="30"/>
+        </Style>
+        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="MinHeight" Value="32"/>
+            <Setter Property="Padding" Value="10,5"/>
+        </Style>
+        <Style x:Key="DeviceConnectButton" TargetType="Button" BasedOn="{StaticResource Primary}">
+            <Setter Property="MinHeight" Value="32"/>
+            <Setter Property="Padding" Value="10,5"/>
+        </Style>
+        <Style x:Key="DeviceCard" TargetType="Border" BasedOn="{StaticResource Panel}">
+            <Setter Property="Padding" Value="14,12"/>
+        </Style>
+        <Style x:Key="DeviceStatusBadge" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource Input}"/>
+            <Setter Property="CornerRadius" Value="5"/>
+            <Setter Property="Padding" Value="7,3"/>
+            <Setter Property="Margin" Value="6,0,0,0"/>
+        </Style>
+        <Style x:Key="DeviceStatusText" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+            <Setter Property="FontSize" Value="12"/>
+            <Style.Triggers>
+                <Trigger Property="Text" Value="已连接">
+                    <Setter Property="Foreground" Value="{StaticResource Green}"/>
+                </Trigger>
+                <Trigger Property="Text" Value="PLC 已连接">
+                    <Setter Property="Foreground" Value="{StaticResource Green}"/>
+                </Trigger>
+                <Trigger Property="Text" Value="连接失败">
+                    <Setter Property="Foreground" Value="{StaticResource Red}"/>
+                </Trigger>
+                <Trigger Property="Text" Value="连接异常">
+                    <Setter Property="Foreground" Value="{StaticResource Red}"/>
+                </Trigger>
+                <Trigger Property="Text" Value="连接中">
+                    <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                </Trigger>
+                <Trigger Property="Text" Value="模拟模式">
+                    <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="DeviceDetail" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+            <Setter Property="Margin" Value="0,5,0,0"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+            <Style.Triggers>
+                <Trigger Property="Text" Value="">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="DeviceDivider" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource Line}"/>
+            <Setter Property="Height" Value="1"/>
+            <Setter Property="Margin" Value="0,10"/>
+        </Style>
+        <Style x:Key="DeviceOutput" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="Height" Value="48"/>
+            <Setter Property="VerticalContentAlignment" Value="Top"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="FontFamily" Value="Consolas, Microsoft YaHei UI"/>
+        </Style>
+    </UserControl.Resources>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <TextBlock Text="设备管理" Style="{StaticResource Title}" Margin="0,0,0,14"/>
+        <ScrollViewer x:Name="DevicesScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <UniformGrid Columns="3">
+                <Border x:Name="CameraCard" Style="{StaticResource DeviceCard}" Margin="0,0,8,0">
+                    <DockPanel LastChildFill="False">
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                            <Border DockPanel.Dock="Right" Style="{StaticResource DeviceStatusBadge}">
+                                <TextBlock x:Name="CameraState" Text="未连接" Style="{StaticResource DeviceStatusText}"/>
+                            </Border>
+                            <TextBlock Text="相机 · TCP" Style="{StaticResource Section}" TextTrimming="CharacterEllipsis"/>
+                        </DockPanel>
+                        <StackPanel DockPanel.Dock="Top">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="71"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,6,0">
+                                    <TextBlock Text="IP / 主机名" Style="{StaticResource DeviceFieldLabel}"/>
+                                    <TextBox x:Name="CameraHost" MaxLength="253" AutomationProperties.Name="相机 IP / 主机名"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="TCP 端口" Style="{StaticResource DeviceFieldLabel}"/>
+                                    <TextBox x:Name="CameraPort" MaxLength="5" AutomationProperties.Name="相机 TCP 端口"/>
+                                </StackPanel>
+                            </Grid>
+                            <WrapPanel Margin="0,8,0,0">
+                                <Button Content="连接" Style="{StaticResource DeviceConnectButton}" Click="CameraConnect_Click" Margin="0,0,6,0"/>
+                                <Button Content="断开" Click="CameraDisconnect_Click" Margin="0,0,6,0"/>
+                                <Button Content="保存" Click="CameraSave_Click"/>
+                            </WrapPanel>
+                            <TextBlock x:Name="CameraDetail" Style="{StaticResource DeviceDetail}"/>
+                            <Border Style="{StaticResource DeviceDivider}"/>
+                            <TextBlock Text="发送指令" Style="{StaticResource Section}" Margin="0,0,0,8"/>
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Right" Width="74" Margin="6,0,0,0">
+                                    <TextBlock Text="附加行尾" Style="{StaticResource DeviceFieldLabel}"/>
+                                    <ComboBox x:Name="CameraEnding" SelectedIndex="0" AutomationProperties.Name="相机发送行尾">
+                                        <ComboBoxItem Content="无"/>
+                                        <ComboBoxItem Content="CR"/>
+                                        <ComboBoxItem Content="LF"/>
+                                        <ComboBoxItem Content="CRLF"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel>
+                                    <TextBlock Text="发送文本（UTF-8）" Style="{StaticResource DeviceFieldLabel}"/>
+                                    <TextBox x:Name="CameraMessage" MaxLength="4096" AutomationProperties.Name="相机发送文本"/>
+                                </StackPanel>
+                            </DockPanel>
+                            <Button x:Name="CameraSendButton" Content="发送" Click="CameraSend_Click" Margin="0,6,0,0"
+                                    HorizontalAlignment="Right" IsEnabled="False"/>
+                        </StackPanel>
+                        <StackPanel DockPanel.Dock="Bottom" Margin="0,9,0,0">
+                            <TextBlock Text="最近接收（十六进制）" Style="{StaticResource DeviceFieldLabel}"/>
+                            <TextBox x:Name="CameraReceived" Text="—" Style="{StaticResource DeviceOutput}"
+                                     AutomationProperties.Name="相机最近接收"/>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+                <Border x:Name="PlcCard" Style="{StaticResource DeviceCard}" Margin="4,0">
+                    <DockPanel LastChildFill="False">
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                            <Border DockPanel.Dock="Right" Style="{StaticResource DeviceStatusBadge}">
+                                <TextBlock Text="{Binding ConnectionLabel}" Style="{StaticResource DeviceStatusText}"/>
+                            </Border>
+                            <TextBlock Text="PLC · Modbus TCP" Style="{StaticResource Section}" TextTrimming="CharacterEllipsis"/>
+                        </DockPanel>
+                        <StackPanel DockPanel.Dock="Top">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="64"/>
+                                    <ColumnDefinition Width="49"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,6,0">
+                                    <TextBlock Text="IP / 主机名" Style="{StaticResource DeviceFieldLabel}"/>
+                                    <TextBox x:Name="PlcHost" MaxLength="253" AutomationProperties.Name="PLC IP / 主机名"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="0,0,6,0">
+                                    <TextBlock Text="TCP 端口" Style="{StaticResource DeviceFieldLabel}"/>
+                                    <TextBox x:Name="PlcPort" MaxLength="5" AutomationProperties.Name="PLC TCP 端口"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="站号" Style="{StaticResource DeviceFieldLabel}"/>
+                                    <TextBox x:Name="PlcUnit" MaxLength="3" AutomationProperties.Name="PLC 站号"/>
+                                </StackPanel>
+                            </Grid>
+                            <WrapPanel Margin="0,8,0,0">
+                                <CheckBox x:Name="PlcWrites" Content="允许 PLC 写入" Foreground="{StaticResource Text}" Margin="0,0,12,2"/>
+                                <CheckBox x:Name="PlcManualWrites" Content="允许手动输出" Foreground="{StaticResource Text}" Margin="0,0,0,2"
+                                          IsEnabled="{Binding IsChecked, ElementName=PlcWrites}"/>
+                            </WrapPanel>
+                            <WrapPanel Margin="0,7,0,0" IsEnabled="{Binding CanSwitchMode}">
+                                <Button Content="连接" Style="{StaticResource DeviceConnectButton}" Click="PlcConnect_Click" Margin="0,0,6,0"/>
+                                <Button Content="断开" Click="PlcDisconnect_Click" Margin="0,0,6,0"/>
+                                <Button Content="保存" Click="PlcSave_Click"/>
+                            </WrapPanel>
+                            <TextBlock x:Name="PlcDetail" Style="{StaticResource DeviceDetail}"/>
+                            <Border Style="{StaticResource DeviceDivider}"/>
+                            <DockPanel>
+                                <TextBlock Text="读写测试" DockPanel.Dock="Left" Style="{StaticResource Section}" Margin="0,0,10,0"/>
+                                <ComboBox x:Name="PlcTestAreaPicker" AutomationProperties.Name="PLC 测试数据区" MinHeight="30"
+                                          SelectedValuePath="Tag" SelectionChanged="PlcTestArea_Changed">
+                                    <ComboBoxItem Content="保持寄存器 · FC03/06" Tag="HoldingRegisters" IsSelected="True"/>
+                                    <ComboBoxItem Content="输入寄存器 · FC04" Tag="InputRegisters"/>
+                                    <ComboBoxItem Content="线圈 · FC01/05" Tag="Coils"/>
+                                    <ComboBoxItem Content="离散输入 · FC02" Tag="DiscreteInputs"/>
+                                </ComboBox>
+                            </DockPanel>
+                            <DockPanel Margin="0,7,0,0">
+                                <Button x:Name="PlcTestReadButton" DockPanel.Dock="Right" Content="读取" Click="PlcTestRead_Click"
+                                        IsEnabled="{Binding CanReadPlcTest}"
+                                        VerticalAlignment="Bottom" Margin="6,0,0,0"/>
+                                <UniformGrid Columns="2">
+                                    <StackPanel Margin="0,0,5,0">
+                                        <TextBlock Text="起始地址（零基）" Style="{StaticResource DeviceFieldLabel}"/>
+                                        <TextBox x:Name="PlcTestAddress" Text="0" MaxLength="5" AutomationProperties.Name="PLC 测试起始地址"/>
+                                    </StackPanel>
+                                    <StackPanel Margin="5,0,0,0">
+                                        <TextBlock Text="读取数量" Style="{StaticResource DeviceFieldLabel}"/>
+                                        <TextBox x:Name="PlcTestCount" Text="1" MaxLength="3" AutomationProperties.Name="PLC 测试读取数量"/>
+                                    </StackPanel>
+                                </UniformGrid>
+                            </DockPanel>
+                            <DockPanel x:Name="PlcTestWriteControls" Margin="0,6,0,0" IsEnabled="{Binding CanWritePlcTest}"
+                                       ToolTipService.ShowOnDisabled="True" ToolTip="{Binding Text, ElementName=PlcTestHint}">
+                                <Button DockPanel.Dock="Right" Content="写入"
+                                        Click="PlcTestWrite_Click" Margin="6,0,0,0"/>
+                                <TextBlock Text="写入值" DockPanel.Dock="Left" Style="{StaticResource MutedText}" Margin="0,0,7,0"/>
+                                <TextBox x:Name="PlcTestValue" MaxLength="5" AutomationProperties.Name="PLC 测试写入值"/>
+                            </DockPanel>
+                            <TextBlock x:Name="PlcTestHint" Text="写入值为单个寄存器原始值，范围 0–65535。"
+                                       Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" Margin="0,5,0,0"
+                                       ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                        </StackPanel>
+                        <StackPanel DockPanel.Dock="Bottom" Margin="0,9,0,0">
+                            <TextBlock Text="测试结果" Style="{StaticResource DeviceFieldLabel}"/>
+                            <TextBox x:Name="PlcTestResult" Text="—" Style="{StaticResource DeviceOutput}"
+                                     AutomationProperties.Name="PLC 测试结果"/>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+                <Border x:Name="ScannerCard" Style="{StaticResource DeviceCard}" Margin="8,0,0,0">
+                    <DockPanel LastChildFill="False">
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                            <Border DockPanel.Dock="Right" Style="{StaticResource DeviceStatusBadge}">
+                                <TextBlock x:Name="ScannerState" Text="未连接" Style="{StaticResource DeviceStatusText}"/>
+                            </Border>
+                            <TextBlock Text="扫码枪 · RS232" Style="{StaticResource Section}" TextTrimming="CharacterEllipsis"/>
+                        </DockPanel>
+                        <StackPanel DockPanel.Dock="Top">
+                        <TextBlock Text="串口" Style="{StaticResource DeviceFieldLabel}"/>
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="刷新" Click="RefreshPorts_Click" Margin="7,0,0,0"/>
+                            <ComboBox x:Name="ScannerPort" IsEditable="True" AutomationProperties.Name="扫码枪串口"/>
+                        </DockPanel>
+                        <UniformGrid Columns="2" Margin="0,7,0,0">
+                            <StackPanel Margin="0,0,5,0">
+                                <TextBlock Text="波特率" Style="{StaticResource DeviceFieldLabel}"/>
+                                <TextBox x:Name="ScannerBaud" MaxLength="7" AutomationProperties.Name="扫码枪波特率"/>
+                            </StackPanel>
+                            <StackPanel Margin="5,0,0,0">
+                                <TextBlock Text="流控" Style="{StaticResource DeviceFieldLabel}"/>
+                                <ComboBox x:Name="ScannerHandshake" AutomationProperties.Name="扫码枪流控"/>
+                            </StackPanel>
+                        </UniformGrid>
+                        <UniformGrid Columns="3" Margin="0,7,0,0">
+                            <StackPanel Margin="0,0,5,0">
+                                <TextBlock Text="数据位" Style="{StaticResource DeviceFieldLabel}"/>
+                                <ComboBox x:Name="ScannerDataBits" AutomationProperties.Name="扫码枪数据位"/>
+                            </StackPanel>
+                            <StackPanel Margin="3,0">
+                                <TextBlock Text="校验位" Style="{StaticResource DeviceFieldLabel}"/>
+                                <ComboBox x:Name="ScannerParity" AutomationProperties.Name="扫码枪校验位"/>
+                            </StackPanel>
+                            <StackPanel Margin="5,0,0,0">
+                                <TextBlock Text="停止位" Style="{StaticResource DeviceFieldLabel}"/>
+                                <ComboBox x:Name="ScannerStopBits" AutomationProperties.Name="扫码枪停止位"/>
+                            </StackPanel>
+                        </UniformGrid>
+                        <WrapPanel Margin="0,8,0,0">
+                            <Button Content="连接" Style="{StaticResource DeviceConnectButton}" Click="ScannerConnect_Click" Margin="0,0,6,0"/>
+                            <Button Content="断开" Click="ScannerDisconnect_Click" Margin="0,0,6,0"/>
+                            <Button Content="保存" Click="ScannerSave_Click"/>
+                        </WrapPanel>
+                        <TextBlock x:Name="ScannerDetail" Style="{StaticResource DeviceDetail}"/>
+                        <Border Style="{StaticResource DeviceDivider}"/>
+                        <TextBlock Text="发送指令" Style="{StaticResource Section}" Margin="0,0,0,8"/>
+                        <UniformGrid Columns="2">
+                            <StackPanel Margin="0,0,4,0">
+                                <TextBlock Text="发送格式" Style="{StaticResource DeviceFieldLabel}"/>
+                                <ComboBox x:Name="ScannerSendFormat" SelectedIndex="0" SelectionChanged="ScannerSendFormat_Changed"
+                                          AutomationProperties.Name="扫码枪发送格式">
+                                    <ComboBoxItem Content="字符串"/>
+                                    <ComboBoxItem Content="HEX"/>
+                                </ComboBox>
+                            </StackPanel>
+                            <StackPanel Margin="4,0,0,0">
+                                <TextBlock Text="附加行尾" Style="{StaticResource DeviceFieldLabel}"/>
+                                <ComboBox x:Name="ScannerSendEnding" SelectedIndex="0" AutomationProperties.Name="扫码枪发送行尾">
+                                    <ComboBoxItem Content="无"/>
+                                    <ComboBoxItem Content="CR"/>
+                                    <ComboBoxItem Content="LF"/>
+                                    <ComboBoxItem Content="CRLF"/>
+                                </ComboBox>
+                            </StackPanel>
+                        </UniformGrid>
+                        <DockPanel Margin="0,8,0,0">
+                            <Button x:Name="ScannerSendButton" DockPanel.Dock="Right" Content="发送" Click="ScannerSend_Click"
+                                    Margin="7,0,0,0" IsEnabled="False"/>
+                            <TextBox x:Name="ScannerSendText" MaxLength="8192" AutomationProperties.Name="扫码枪发送内容"/>
+                        </DockPanel>
+                        <TextBlock x:Name="ScannerSendHint" Text="按 UTF-8 编码发送。" Style="{StaticResource DeviceDetail}"/>
+                        </StackPanel>
+                        <StackPanel DockPanel.Dock="Bottom" Margin="0,9,0,0">
+                            <TextBlock Text="最近条码" Style="{StaticResource DeviceFieldLabel}"/>
+                            <TextBox x:Name="ScannerReceived" Text="—" Style="{StaticResource DeviceOutput}" AutomationProperties.Name="最近条码"/>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+            </UniformGrid>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

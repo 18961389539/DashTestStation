@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>DustLoadScada</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NModbus" Version="3.0.83" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.7" />
+    <None Update="plc.example.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
