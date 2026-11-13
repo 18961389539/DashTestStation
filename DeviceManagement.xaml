@@ -168,11 +168,6 @@
                                     <TextBox x:Name="PlcUnit" MaxLength="3" AutomationProperties.Name="PLC 站号"/>
                                 </StackPanel>
                             </Grid>
-                            <WrapPanel Margin="0,8,0,0">
-                                <CheckBox x:Name="PlcWrites" Content="允许 PLC 写入" Foreground="{StaticResource Text}" Margin="0,0,12,2"/>
-                                <CheckBox x:Name="PlcManualWrites" Content="允许手动输出" Foreground="{StaticResource Text}" Margin="0,0,0,2"
-                                          IsEnabled="{Binding IsChecked, ElementName=PlcWrites}"/>
-                            </WrapPanel>
                             <WrapPanel Margin="0,7,0,0" IsEnabled="{Binding CanSwitchMode}">
                                 <Button Content="连接" Style="{StaticResource DeviceConnectButton}" Click="PlcConnect_Click" Margin="0,0,6,0"/>
                                 <Button Content="断开" Click="PlcDisconnect_Click" Margin="0,0,6,0"/>

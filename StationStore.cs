@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.IO;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -10,7 +9,6 @@ namespace DustLoadScada;
 
 public sealed class StationStore
 {
-    private const int PasswordIterations = 600_000;
     private static readonly JsonSerializerOptions PointJson = new()
     {
         Converters = { new JsonStringEnumConverter(allowIntegerValues: false) }
@@ -34,10 +32,6 @@ public sealed class StationStore
                 id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, data TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS users (
-                name TEXT PRIMARY KEY COLLATE NOCASE, role INTEGER NOT NULL, enabled INTEGER NOT NULL,
-                salt BLOB NOT NULL, hash BLOB NOT NULL
-            );
             CREATE TABLE IF NOT EXISTS tests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, cycle_id INTEGER NOT NULL,
                 utc TEXT NOT NULL, barcode TEXT NOT NULL, data TEXT NOT NULL
@@ -60,6 +54,8 @@ public sealed class StationStore
     }
 
     public Dictionary<MonitorPointId, MonitorPoint> LoadMonitorPoints() => LoadPoints<MonitorPointId, MonitorPoint>("monitor_points");
+    internal BarcodePoint? LoadBarcodePoint() => LoadSetting<BarcodePoint>("barcode_point");
+    internal ushort? LoadRecordTrigger() => LoadSetting<RecordTriggerPoint>("record_trigger")?.Address;
     public Dictionary<ManualPointId, ManualPoint> LoadManualPoints() => LoadPoints<ManualPointId, ManualPoint>("manual_points");
     public Dictionary<RecipePointId, ushort> LoadRecipePoints() => LoadPoints<RecipePointId, ushort>("recipe_points");
     public Dictionary<string, InspectionPoint> LoadInspectionPoints() => LoadPoints<string, InspectionPoint>("inspection_points");
@@ -80,6 +76,32 @@ public sealed class StationStore
     }
 
     public void SaveMonitorPoints(IReadOnlyDictionary<MonitorPointId, MonitorPoint> points) => SavePoints("monitor_points", points);
+    internal void SaveRecordTrigger(ushort? address) => SaveSetting("record_trigger", new RecordTriggerPoint(address));
+
+    private sealed record RecordTriggerPoint(ushort? Address);
+
+    internal ushort? LoadRuntimePoint() => LoadSetting<RuntimePoint>("runtime_point")?.Address;
+    internal void SaveRuntimePoint(ushort? address) => SaveSetting("runtime_point", new RuntimePoint(address));
+    internal TimeSpan LoadRuntimeTotal() =>
+        TimeSpan.FromMilliseconds(LoadSetting<RuntimeTotal>("runtime_total")?.Milliseconds ?? 0);
+    internal void SaveRuntimeTotal(TimeSpan total) =>
+        SaveSetting("runtime_total", new RuntimeTotal((long)total.TotalMilliseconds));
+
+    private sealed record RuntimePoint(ushort? Address);
+    private sealed record RuntimeTotal(long Milliseconds);
+    internal void SaveBarcodePoint(BarcodePoint? point)
+    {
+        if (point is not null)
+        {
+            SaveSetting("barcode_point", point);
+            return;
+        }
+
+        using var db = Open();
+        using var command = db.CreateCommand();
+        command.CommandText = "DELETE FROM settings WHERE key='barcode_point'";
+        command.ExecuteNonQuery();
+    }
     public void SaveManualPoints(IReadOnlyDictionary<ManualPointId, ManualPoint> points) => SavePoints("manual_points", points);
     public void SaveRecipePoints(IReadOnlyDictionary<RecipePointId, ushort> points) => SavePoints("recipe_points", points);
     public void SaveInspectionPoints(IReadOnlyDictionary<string, InspectionPoint> points) => SavePoints("inspection_points", points);
@@ -237,84 +259,27 @@ public sealed class StationStore
         command.ExecuteNonQuery();
     }
 
-    public List<UserAccount> Users()
-    {
-        using var db = Open();
-        using var command = db.CreateCommand();
-        command.CommandText = "SELECT name, role, enabled FROM users ORDER BY name";
-        using var reader = command.ExecuteReader();
-        var users = new List<UserAccount>();
-        while (reader.Read())
-            users.Add(new UserAccount(reader.GetString(0), (UserRole)reader.GetInt32(1), reader.GetBoolean(2)));
-        return users;
-    }
-
-    public UserAccount? Authenticate(string name, string password)
-    {
-        using var db = Open();
-        using var command = db.CreateCommand();
-        command.CommandText = "SELECT name, role, salt, hash FROM users WHERE name=$name AND enabled=1";
-        command.Parameters.AddWithValue("$name", name.Trim());
-        using var reader = command.ExecuteReader();
-        if (!reader.Read() || !CryptographicOperations.FixedTimeEquals(
-            (byte[])reader[3], PasswordHash(password, (byte[])reader[2])))
-            return null;
-        return new UserAccount(reader.GetString(0), (UserRole)reader.GetInt32(1), true);
-    }
-
-    public void CreateUser(string name, string password, UserRole role, bool firstAccount)
-    {
-        name = name.Trim();
-        if (name.Length is < 1 or > 50 || password.Length is < 8 or > 128)
-            throw new InvalidOperationException("用户名须为 1–50 个字符，密码须为 8–128 个字符。");
-        var salt = RandomNumberGenerator.GetBytes(16);
-        using var db = Open();
-        using var command = db.CreateCommand();
-        command.CommandText = firstAccount
-            ? "INSERT INTO users SELECT $name, $role, 1, $salt, $hash WHERE NOT EXISTS (SELECT 1 FROM users)"
-            : "INSERT INTO users VALUES ($name, $role, 1, $salt, $hash)";
-        command.Parameters.AddWithValue("$name", name);
-        command.Parameters.AddWithValue("$role", (int)role);
-        command.Parameters.AddWithValue("$salt", salt);
-        command.Parameters.AddWithValue("$hash", PasswordHash(password, salt));
-        try
-        {
-            if (command.ExecuteNonQuery() != 1)
-                throw new InvalidOperationException("负责人账号已初始化，请登录。");
-        }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
-        {
-            throw new InvalidOperationException("用户名已存在。", ex);
-        }
-    }
-
-    public void ToggleUser(UserAccount user)
-    {
-        using var db = Open();
-        using var command = db.CreateCommand();
-        command.CommandText = """
-            UPDATE users SET enabled=1-enabled WHERE name=$name AND
-                (enabled=0 OR role<>1 OR (SELECT COUNT(*) FROM users WHERE role=1 AND enabled=1)>1)
-            """;
-        command.Parameters.AddWithValue("$name", user.Name);
-        if (command.ExecuteNonQuery() == 0)
-            throw new InvalidOperationException("至少保留一个启用的负责人账号。");
-    }
-
-    private static byte[] PasswordHash(string password, byte[] salt) =>
-        Rfc2898DeriveBytes.Pbkdf2(password, salt, PasswordIterations, HashAlgorithmName.SHA256, 32);
-
     public static void Export(string path, IEnumerable<TestRecord> records)
     {
         using var writer = new StreamWriter(path, false, new UTF8Encoding(true));
-        writer.WriteLine("序号,时间,来源,扫码信息,产品型号,电压(V),正常功率(W),灰尘功率(W),功率差(W),正常转速(r/min),灰尘转速(r/min),转速差(r/min),功率判定,转速判定,方向判定,地刷灯判定,总判定,用时(s),测试流水号");
+        writer.WriteLine("二维码,时间,正常电压,地刷灯亮判定,正常电流,正常电流判定结果,正常功率,正常功率判定结果,正常转速,正常转速判定结果,转速方向判定结果,地刷灯灭判定,灰尘测试电流,灰尘电流判定结果,灰尘测试功率,灰尘功率判定结果,灰尘测试转速,灰尘转速判定结果,总判定结果");
+        static string? VerdictCell(Verdict? verdict) => verdict is Verdict value ? Texts.Verdict(value) : null;
         foreach (var record in records)
         {
             var test = record.Test;
-            object?[] cells = [record.Id, record.DisplayTime, record.SourceText, record.Test.Barcode, record.Test.Model,
-                test.Voltage, test.NormalPower, test.DustPower, test.PowerDelta, test.NormalSpeed, test.DustSpeed, test.SpeedDelta,
-                Texts.Verdict(test.PowerVerdict), Texts.Verdict(test.SpeedVerdict), Texts.Verdict(test.DirectionVerdict),
-                Texts.Verdict(test.BrushLightVerdict), Texts.Verdict(test.Result), test.Elapsed, test.CycleId];
+            object?[] cells =
+            [
+                test.Barcode, record.DisplayTime,
+                test.NormalVoltage, VerdictCell(test.BrushLightVerdict),
+                test.NormalCurrent, VerdictCell(test.NormalCurrentVerdict),
+                test.NormalPower, VerdictCell(test.NormalPowerVerdict),
+                test.NormalSpeed, VerdictCell(test.NormalSpeedVerdict),
+                VerdictCell(test.DirectionVerdict), VerdictCell(test.BrushLightOffVerdict),
+                test.DustCurrent, VerdictCell(test.DustCurrentVerdict),
+                test.DustPower, VerdictCell(test.DustPowerVerdict),
+                test.DustSpeed, VerdictCell(test.DustSpeedVerdict),
+                VerdictCell(test.Result)
+            ];
             writer.WriteLine(string.Join(",", cells.Select(CsvCell)));
         }
     }

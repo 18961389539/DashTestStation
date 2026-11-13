@@ -8,8 +8,6 @@
   "TelemetryAddress": 0,
   "UseInputRegisters": false,
   "LowWordFirst": false,
-  "EnableWrites": false,
-  "EnableManualWrites": false,
   "RecipeAddress": null,
   "Commands": {}
 }

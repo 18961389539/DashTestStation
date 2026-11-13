@@ -23,21 +23,30 @@ public abstract class Bindable : INotifyPropertyChanged
 
 public enum TestStage { Idle, Normal, Dust, Completed, Fault }
 public enum Verdict { Pending, Pass, Fail }
-public enum UserRole { Operator, Supervisor }
+public enum CameraRecipeId { HeadlightAndIndicator = 1, Headlight = 2, Indicator = 3 }
 
 public sealed record Recipe
 {
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "标准测试";
     public string Model { get; set; } = "DEMO-A01";
+    public CameraRecipeId CameraRecipe { get; set; } = CameraRecipeId.HeadlightAndIndicator;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string CameraCommand => CameraRecipe switch
+    {
+        CameraRecipeId.HeadlightAndIndicator => "switch 1",
+        CameraRecipeId.Headlight => "switch 2",
+        CameraRecipeId.Indicator => "switch 3",
+        _ => throw new InvalidOperationException("请选择有效的相机配方。")
+    };
     public double VoltageMin { get; set; } = 21;
     public double VoltageMax { get; set; } = 28;
     public double PowerDeltaMin { get; set; } = 0;
     public double PowerDeltaMax { get; set; } = 30;
     public double SpeedDeltaMin { get; set; } = 0;
     public double SpeedDeltaMax { get; set; } = 500;
-    public int BarcodeLength { get; set; }
-    public string BarcodeTerminator { get; set; } = "";
+    public int BarcodeStartIndex { get; set; } = 1;
+    public int BarcodeCompareLength { get; set; }
     public double NormalSeconds { get; set; } = 3;
     public double DustSeconds { get; set; } = 4;
     public double PowerActionSeconds { get; set; } = 0.5;
@@ -53,17 +62,23 @@ public sealed record Recipe
     {
         Name = Name.Trim();
         Model = Model.Trim();
+        if (!Enum.IsDefined(CameraRecipe))
+            throw new InvalidOperationException("请选择有效的相机配方。");
         if (Name.Length is < 1 or > 80 || Model.Length is < 1 or > 80)
             throw new InvalidOperationException("配方名称和产品型号须为 1–80 个字符。");
 
         ValidateRange(VoltageMin, VoltageMax, "电压");
         ValidateRange(PowerDeltaMin, PowerDeltaMax, "功率差");
         ValidateRange(SpeedDeltaMin, SpeedDeltaMax, "转速差");
-        if (BarcodeLength is < 0 or > 512 || BarcodeTerminator.Length > 16)
-            throw new InvalidOperationException("扫码长度须在 0–512 之间，结束字符最多 16 个字符。");
+        if (new[] { SpeedDeltaMin, SpeedDeltaMax }.Any(value =>
+                !double.IsFinite(value) || value != Math.Truncate(value)))
+            throw new InvalidOperationException("转速差上下限须为整数。");
+        if (BarcodeStartIndex is < 1 or > 512 || BarcodeCompareLength is < 0 or > 512)
+            throw new InvalidOperationException("开始序号须在 1–512 之间，对比长度须在 0–512 之间。");
 
-        if (new[] { NormalSeconds, DustSeconds }.Any(value => !double.IsFinite(value) || value <= 0 || value > 3600))
-            throw new InvalidOperationException("正常及灰尘测试时间须大于 0 且最多 3600 秒。");
+        if (new[] { NormalSeconds, DustSeconds }.Any(value =>
+                !double.IsFinite(value) || value <= 0 || value > 3600 || value != Math.Truncate(value)))
+            throw new InvalidOperationException("正常及灰尘测试时间须为 1–3600 秒的整数。");
 
         if (new[] { PowerActionSeconds, GearActionSeconds, PowerIntervalSeconds, GearIntervalSeconds,
                     AlarmSeconds, IndicatorOffSeconds }.Any(value => !double.IsFinite(value) || value < 0 || value > 3600))
@@ -88,6 +103,9 @@ public sealed record TestSnapshot
     public string Barcode { get; init; } = "";
     public string Model { get; init; } = "";
     public double? Voltage { get; init; }
+    public double? NormalVoltage { get; init; }
+    public double? NormalCurrent { get; init; }
+    public double? DustCurrent { get; init; }
     public double? NormalPower { get; init; }
     public double? DustPower { get; init; }
     public double? PowerDelta { get; init; }
@@ -98,6 +116,13 @@ public sealed record TestSnapshot
     public Verdict SpeedVerdict { get; init; }
     public Verdict DirectionVerdict { get; init; }
     public Verdict BrushLightVerdict { get; init; }
+    public Verdict? BrushLightOffVerdict { get; init; }
+    public Verdict? NormalCurrentVerdict { get; init; }
+    public Verdict? NormalPowerVerdict { get; init; }
+    public Verdict? NormalSpeedVerdict { get; init; }
+    public Verdict? DustCurrentVerdict { get; init; }
+    public Verdict? DustPowerVerdict { get; init; }
+    public Verdict? DustSpeedVerdict { get; init; }
     public Verdict Result { get; init; }
     public bool Running => Stage is TestStage.Normal or TestStage.Dust;
 }
@@ -106,12 +131,6 @@ public sealed record TestRecord(long Id, string Source, DateTimeOffset Time, Tes
 {
     public string DisplayTime => Time.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
     public string SourceText => Source == "simulation" ? "模拟" : Source[4..];
-}
-
-public sealed record UserAccount(string Name, UserRole Role, bool Enabled)
-{
-    public string RoleText => Role == UserRole.Supervisor ? "负责人" : "操作员";
-    public string StateText => Enabled ? "启用" : "停用";
 }
 
 public sealed class InspectionSwitch(string key, string label, int feedbackBit) : Bindable

@@ -6,7 +6,9 @@ public enum MonitorPointId
 {
     NormalPower, DustPower, PowerDelta, PowerVerdict,
     NormalSpeed, DustSpeed, SpeedDelta, SpeedVerdict, DirectionVerdict,
-    Voltage, Result
+    Voltage, Result, BrushLightVerdict,
+    NormalVoltage, NormalCurrent, NormalCurrentVerdict, NormalPowerVerdict, NormalSpeedVerdict,
+    BrushLightOffVerdict, DustCurrent, DustCurrentVerdict, DustPowerVerdict, DustSpeedVerdict
 }
 
 public enum RegisterDataType { Int16, UInt16, Int32, UInt32, Float32 }
@@ -17,8 +19,22 @@ public sealed record MonitorPoint(ushort Address, RegisterDataType DataType)
     internal int End => Address + WordCount;
 }
 
+internal sealed record BarcodePoint(ushort Address, ushort WordCount)
+{
+    public const ushort MaxWords = 125;
+    internal int End => Address + WordCount;
+
+    public static BarcodePoint DefaultAt(ushort baseAddress) => new(checked((ushort)(baseAddress + 26)), 16);
+
+    public void Validate()
+    {
+        if (WordCount is < 1 or > MaxWords || End > 65536)
+            throw new InvalidOperationException($"二维码须占用 1–{MaxWords} 个连续寄存器，且不能超出地址范围。");
+    }
+}
+
 internal sealed record MonitorPointDefinition(
-    string Label, int Offset, RegisterDataType DefaultType, string? ScaledUnit = null)
+    string Label, int? Offset, RegisterDataType DefaultType, string? ScaledUnit = null)
 {
     private static readonly Dictionary<MonitorPointId, MonitorPointDefinition> Definitions = new()
     {
@@ -32,12 +48,24 @@ internal sealed record MonitorPointDefinition(
         [MonitorPointId.SpeedVerdict] = new("转速判定", 21, RegisterDataType.UInt16),
         [MonitorPointId.DirectionVerdict] = new("转速方向判定", 23, RegisterDataType.UInt16),
         [MonitorPointId.Voltage] = new("实时电压", 6, RegisterDataType.Int32, "V"),
-        [MonitorPointId.Result] = new("总判定", 22, RegisterDataType.UInt16)
+        [MonitorPointId.Result] = new("总判定", 22, RegisterDataType.UInt16),
+        [MonitorPointId.BrushLightVerdict] = new("地刷灯亮判定", 25, RegisterDataType.UInt16),
+        [MonitorPointId.NormalVoltage] = new("正常电压", null, RegisterDataType.Float32, "V"),
+        [MonitorPointId.NormalCurrent] = new("正常电流", null, RegisterDataType.Float32, "A"),
+        [MonitorPointId.NormalCurrentVerdict] = new("正常电流判定结果", null, RegisterDataType.UInt16),
+        [MonitorPointId.NormalPowerVerdict] = new("正常功率判定结果", null, RegisterDataType.UInt16),
+        [MonitorPointId.NormalSpeedVerdict] = new("正常转速判定结果", null, RegisterDataType.UInt16),
+        [MonitorPointId.BrushLightOffVerdict] = new("地刷灯灭判定", null, RegisterDataType.UInt16),
+        [MonitorPointId.DustCurrent] = new("灰尘测试电流", null, RegisterDataType.Float32, "A"),
+        [MonitorPointId.DustCurrentVerdict] = new("灰尘电流判定结果", null, RegisterDataType.UInt16),
+        [MonitorPointId.DustPowerVerdict] = new("灰尘功率判定结果", null, RegisterDataType.UInt16),
+        [MonitorPointId.DustSpeedVerdict] = new("灰尘转速判定结果", null, RegisterDataType.UInt16)
     };
 
     public static MonitorPointDefinition For(MonitorPointId id) => Definitions[id];
 
-    public MonitorPoint DefaultAt(ushort baseAddress) => new(checked((ushort)(baseAddress + Offset)), DefaultType);
+    public MonitorPoint? DefaultAt(ushort baseAddress) => Offset is int offset
+        ? new(checked((ushort)(baseAddress + offset)), DefaultType) : null;
 
     public double Decode(RegisterDataType type, ReadOnlySpan<ushort> words, bool lowWordFirst)
     {
@@ -64,65 +92,103 @@ internal sealed class MonitorReadPlan
 {
     private readonly PlcSettings settings;
     private readonly Dictionary<MonitorPointId, MonitorPoint> points = new();
-    private readonly List<(int Start, int End)> additionalBlocks = [];
+    private readonly BarcodePoint? barcodeOverride;
+    private readonly BarcodePoint barcode;
+    private readonly List<(int Start, int End)> liveBlocks;
+    private readonly List<(int Start, int End)> completedBlocks;
 
-    public MonitorReadPlan(PlcSettings settings, IReadOnlyDictionary<MonitorPointId, MonitorPoint> overrides)
+    public MonitorReadPlan(PlcSettings settings, IReadOnlyDictionary<MonitorPointId, MonitorPoint> overrides,
+        BarcodePoint? barcodeOverride = null)
     {
         this.settings = settings;
+        this.barcodeOverride = barcodeOverride;
+        barcode = barcodeOverride ?? BarcodePoint.DefaultAt(settings.TelemetryAddress);
+        barcode.Validate();
+        ValidateRecipeOverlap(barcode.Address, barcode.End, "二维码");
         foreach (var id in Enum.GetValues<MonitorPointId>())
         {
             var definition = MonitorPointDefinition.For(id);
             var point = overrides.TryGetValue(id, out var configured) ? configured : definition.DefaultAt(settings.TelemetryAddress);
-            if (point is null || !Enum.IsDefined(point.DataType) || point.End > 65536)
+            if (point is null)
+                continue;
+            if (!Enum.IsDefined(point.DataType) || point.End > 65536)
                 throw new InvalidOperationException($"{definition.Label}的数据类型或寄存器地址超出范围。");
 
-            if (!settings.UseInputRegisters && settings.RecipeAddress is ushort recipeAddress
-                && point.Address < recipeAddress + PlcLayout.RecipeWords && recipeAddress < point.End)
-                throw new InvalidOperationException($"{definition.Label}的地址与配方保持寄存器重叠。");
+            ValidateRecipeOverlap(point.Address, point.End, definition.Label);
 
             points.Add(id, point);
         }
 
-        foreach (var point in points.Values.Where(point => !InTelemetry(point)).OrderBy(point => point.Address))
-        {
-            if (additionalBlocks.Count > 0 && point.Address <= additionalBlocks[^1].End)
-            {
-                var previous = additionalBlocks[^1];
-                additionalBlocks[^1] = (previous.Start, Math.Max(previous.End, point.End));
-            }
-            else
-                additionalBlocks.Add((point.Address, point.End));
-        }
+        liveBlocks = MergeAdditionalBlocks(points.Where(entry => MonitorPointDefinition.For(entry.Key).Offset.HasValue)
+            .Select(entry => entry.Value));
+        completedBlocks = MergeAdditionalBlocks(points.Values);
     }
 
-    private bool InTelemetry(MonitorPoint point) => point.Address >= settings.TelemetryAddress
-        && point.End <= settings.TelemetryAddress + PlcLayout.TelemetryWords;
+    public MonitorReadPlan WithPoints(IReadOnlyDictionary<MonitorPointId, MonitorPoint> overrides) =>
+        new(settings, overrides, barcodeOverride);
+
+    public MonitorReadPlan WithBarcode(BarcodePoint? point) => new(settings, points, point);
+
+    private void ValidateRecipeOverlap(int start, int end, string label)
+    {
+        if (!settings.UseInputRegisters && settings.RecipeAddress is ushort recipeAddress
+            && start < recipeAddress + PlcLayout.RecipeWords && recipeAddress < end)
+            throw new InvalidOperationException($"{label}的地址与配方保持寄存器重叠。");
+    }
+
+    private List<(int Start, int End)> MergeAdditionalBlocks(IEnumerable<MonitorPoint> candidates)
+    {
+        var blocks = new List<(int Start, int End)>();
+        foreach (var point in candidates.Where(point => !InTelemetry(point.Address, point.End)).OrderBy(point => point.Address))
+        {
+            if (blocks.Count > 0 && point.Address <= blocks[^1].End)
+            {
+                var previous = blocks[^1];
+                blocks[^1] = (previous.Start, Math.Max(previous.End, point.End));
+            }
+            else
+                blocks.Add((point.Address, point.End));
+        }
+        return blocks;
+    }
+
+    private bool InTelemetry(int start, int end) => start >= settings.TelemetryAddress
+        && end <= settings.TelemetryAddress + PlcLayout.TelemetryWords;
 
     public bool OverlapsHoldingRegisters(int start, int end) => !settings.UseInputRegisters &&
         (start < settings.TelemetryAddress + PlcLayout.TelemetryWords && settings.TelemetryAddress < end
+            || start < barcode.End && barcode.Address < end
             || points.Values.Any(point => start < point.End && point.Address < end));
 
-    public (TestSnapshot Test, ushort Feedback) Read(Func<ushort, ushort, ushort[]> read)
+    public (TestSnapshot Test, ushort Feedback) Read(Func<ushort, ushort, ushort[]> read,
+        bool readHistoryOnCompletion = true, bool triggered = false)
     {
         for (int attempt = 0; attempt < 2; attempt++)
         {
             var telemetry = read(settings.TelemetryAddress, PlcLayout.TelemetryWords);
             var identity = PlcLayout.ReadIdentity(telemetry, settings.LowWordFirst);
+            bool readHistory = triggered || (readHistoryOnCompletion && identity.Stage == TestStage.Completed);
+            var additionalBlocks = readHistory ? completedBlocks : liveBlocks;
             var extra = additionalBlocks.Select(block =>
                 read((ushort)block.Start, (ushort)(block.End - block.Start))).ToArray();
+            bool barcodeInTelemetry = InTelemetry(barcode.Address, barcode.End);
+            var barcodeWords = barcodeInTelemetry
+                ? telemetry.AsSpan(barcode.Address - settings.TelemetryAddress, barcode.WordCount)
+                : read(barcode.Address, barcode.WordCount).AsSpan();
 
-            if (extra.Length > 0)
+            if (extra.Length > 0 || !barcodeInTelemetry)
             {
                 var latest = read(settings.TelemetryAddress, PlcLayout.TelemetryWords);
                 if (identity != PlcLayout.ReadIdentity(latest, settings.LowWordFirst))
                     continue;
             }
 
-            double Value(MonitorPointId id)
+            double? Value(MonitorPointId id)
             {
-                var point = points[id];
                 var definition = MonitorPointDefinition.For(id);
-                if (InTelemetry(point))
+                if ((!readHistory && !definition.Offset.HasValue) || !points.TryGetValue(id, out var point))
+                    return null;
+                if (InTelemetry(point.Address, point.End))
                     return definition.Decode(point.DataType,
                         telemetry.AsSpan(point.Address - settings.TelemetryAddress, point.WordCount), settings.LowWordFirst);
 
@@ -131,7 +197,7 @@ internal sealed class MonitorReadPlan
                     extra[block].AsSpan(point.Address - additionalBlocks[block].Start, point.WordCount), settings.LowWordFirst);
             }
 
-            return PlcLayout.Decode(telemetry, settings.LowWordFirst, Value);
+            return PlcLayout.Decode(telemetry, settings.LowWordFirst, Value, PlcLayout.ReadString(barcodeWords), triggered);
         }
 
         throw new InvalidDataException("读取测试点位期间 PLC 状态发生变化，请等待下一次轮询。");

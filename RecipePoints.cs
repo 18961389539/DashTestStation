@@ -7,26 +7,26 @@ public enum RecipePointId
     GearIntervalSeconds, PowerCycles, GearCycles, AlarmSeconds, IndicatorOffSeconds
 }
 
-internal sealed record RecipePoint(string Label, int Offset, Func<Recipe, double> Value, int Scale = 1, int WordCount = 2)
+internal sealed record RecipePoint(string Label, int Offset, Func<Recipe, double> Value, int Scale = 1, int WordCount = 2, bool IsFloat = false)
 {
     public static readonly IReadOnlyDictionary<RecipePointId, RecipePoint> All = new Dictionary<RecipePointId, RecipePoint>
     {
-        [RecipePointId.VoltageMin] = new("电压下限", 1, r => r.VoltageMin, 100),
-        [RecipePointId.VoltageMax] = new("电压上限", 3, r => r.VoltageMax, 100),
-        [RecipePointId.PowerDeltaMin] = new("功率差下限", 5, r => r.PowerDeltaMin, 100),
-        [RecipePointId.PowerDeltaMax] = new("功率差上限", 7, r => r.PowerDeltaMax, 100),
+        [RecipePointId.VoltageMin] = new("电压下限", 1, r => r.VoltageMin, IsFloat: true),
+        [RecipePointId.VoltageMax] = new("电压上限", 3, r => r.VoltageMax, IsFloat: true),
+        [RecipePointId.PowerDeltaMin] = new("功率差下限", 5, r => r.PowerDeltaMin, IsFloat: true),
+        [RecipePointId.PowerDeltaMax] = new("功率差上限", 7, r => r.PowerDeltaMax, IsFloat: true),
         [RecipePointId.SpeedDeltaMin] = new("转速差下限", 9, r => r.SpeedDeltaMin),
         [RecipePointId.SpeedDeltaMax] = new("转速差上限", 11, r => r.SpeedDeltaMax),
-        [RecipePointId.NormalSeconds] = new("正常测试时间", 13, r => r.NormalSeconds, 1000),
-        [RecipePointId.DustSeconds] = new("灰尘测试时间", 15, r => r.DustSeconds, 1000),
-        [RecipePointId.PowerActionSeconds] = new("开机动作时长", 17, r => r.PowerActionSeconds, 1000),
-        [RecipePointId.GearActionSeconds] = new("档位动作时长", 19, r => r.GearActionSeconds, 1000),
-        [RecipePointId.PowerIntervalSeconds] = new("开机间隔时间", 21, r => r.PowerIntervalSeconds, 1000),
-        [RecipePointId.GearIntervalSeconds] = new("档位间隔时间", 23, r => r.GearIntervalSeconds, 1000),
+        [RecipePointId.NormalSeconds] = new("正常测试时间", 13, r => r.NormalSeconds),
+        [RecipePointId.DustSeconds] = new("灰尘测试时间", 15, r => r.DustSeconds),
+        [RecipePointId.PowerActionSeconds] = new("开机动作时长", 17, r => r.PowerActionSeconds, 10),
+        [RecipePointId.GearActionSeconds] = new("档位动作时长", 19, r => r.GearActionSeconds, 10),
+        [RecipePointId.PowerIntervalSeconds] = new("开机间隔时间", 21, r => r.PowerIntervalSeconds, 10),
+        [RecipePointId.GearIntervalSeconds] = new("档位间隔时间", 23, r => r.GearIntervalSeconds, 10),
         [RecipePointId.PowerCycles] = new("开机次数", 25, r => r.PowerCycles, WordCount: 1),
         [RecipePointId.GearCycles] = new("档位次数", 26, r => r.GearCycles, WordCount: 1),
-        [RecipePointId.AlarmSeconds] = new("报警时间", 27, r => r.AlarmSeconds, 1000),
-        [RecipePointId.IndicatorOffSeconds] = new("跑马灯灭时间设定", 29, r => r.IndicatorOffSeconds, 1000)
+        [RecipePointId.AlarmSeconds] = new("报警时间", 27, r => r.AlarmSeconds, 10),
+        [RecipePointId.IndicatorOffSeconds] = new("跑马灯灭时间设定", 29, r => r.IndicatorOffSeconds, 10)
     };
 
     public ushort? DefaultAddress(PlcSettings settings) => settings.RecipeAddress is ushort start
@@ -34,6 +34,16 @@ internal sealed record RecipePoint(string Label, int Offset, Func<Recipe, double
 
     public void Encode(Recipe recipe, Span<ushort> words, bool lowWordFirst)
     {
+        if (IsFloat)
+        {
+            float single = (float)(Value(recipe) * Scale);
+            if (!float.IsFinite(single))
+                throw new InvalidOperationException($"{Label}超出 Float32 范围。");
+            uint floatBits = BitConverter.SingleToUInt32Bits(single);
+            words[lowWordFirst ? 1 : 0] = (ushort)(floatBits >> 16);
+            words[lowWordFirst ? 0 : 1] = (ushort)floatBits;
+            return;
+        }
         double value = Math.Round(Value(recipe) * Scale, MidpointRounding.AwayFromZero);
         if (WordCount == 1)
         {

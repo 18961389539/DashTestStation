@@ -12,12 +12,38 @@ namespace DustLoadScada;
 
 public partial class MainWindow : Window
 {
+    private const string AdministratorPassword = "123456";
+    private const string RecordTriggerLabel = "记录触发";
+    private static readonly (MonitorPointId Id, string Label)[] HistoryFields =
+    [
+        (MonitorPointId.NormalVoltage, "正常电压"),
+        (MonitorPointId.BrushLightVerdict, "地刷灯亮判定"),
+        (MonitorPointId.NormalCurrent, "正常电流"),
+        (MonitorPointId.NormalCurrentVerdict, "正常电流判定结果"),
+        (MonitorPointId.NormalPower, "正常功率"),
+        (MonitorPointId.NormalPowerVerdict, "正常功率判定结果"),
+        (MonitorPointId.NormalSpeed, "正常转速"),
+        (MonitorPointId.NormalSpeedVerdict, "正常转速判定结果"),
+        (MonitorPointId.DirectionVerdict, "转速方向判定结果"),
+        (MonitorPointId.BrushLightOffVerdict, "地刷灯灭判定"),
+        (MonitorPointId.DustCurrent, "灰尘测试电流"),
+        (MonitorPointId.DustCurrentVerdict, "灰尘电流判定结果"),
+        (MonitorPointId.DustPower, "灰尘测试功率"),
+        (MonitorPointId.DustPowerVerdict, "灰尘功率判定结果"),
+        (MonitorPointId.DustSpeed, "灰尘测试转速"),
+        (MonitorPointId.DustSpeedVerdict, "灰尘转速判定结果"),
+        (MonitorPointId.Result, "总判定结果")
+    ];
+
+    private sealed record HistoryPointRow(MonitorPointId? Id, string Label, string Address, string DataType, string Status);
     private readonly StationView view = new();
     private readonly string dataFolder;
     private readonly FrameworkElement[] pages;
     private readonly Mutex appMutex;
     private StationStore store = null!;
     private Dictionary<MonitorPointId, MonitorPoint> monitorPoints = new();
+    private BarcodePoint? barcodePoint;
+    private ushort? recordTrigger;
     private Dictionary<ManualPointId, ManualPoint> manualPoints = new();
     private Dictionary<RecipePointId, ushort> recipePoints = new();
     private Dictionary<string, InspectionPoint> inspectionPoints = new();
@@ -36,11 +62,14 @@ public partial class MainWindow : Window
     private bool ownsMutex;
     private string? storageError;
     private int currentPage;
+    private ushort? runtimePoint;
+    private RuntimeCounter runtime = new(TimeSpan.Zero);
+    private string? runtimeError;
 
     public MainWindow()
     {
         InitializeComponent();
-        pages = [MonitorPage, ManualPage, RecipePage, HistoryPage, ContactPage, AccessPage, DevicesPage];
+        pages = [MonitorPage, ManualPage, RecipePage, HistoryPage, ContactPage, AccessPage, DevicesPage, SystemPage];
         string? overrideFolder = Environment.GetEnvironmentVariable("DUSTLOADSCADA_DATA_DIR");
         dataFolder = string.IsNullOrWhiteSpace(overrideFolder)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DustLoadScada")
@@ -71,11 +100,16 @@ public partial class MainWindow : Window
 
             store = new StationStore(dataFolder);
             monitorPoints = store.LoadMonitorPoints();
+            barcodePoint = store.LoadBarcodePoint();
+            recordTrigger = store.LoadRecordTrigger();
             manualPoints = store.LoadManualPoints();
             recipePoints = store.LoadRecipePoints();
             inspectionPoints = store.LoadInspectionPoints();
+            runtimePoint = store.LoadRuntimePoint();
+            runtime = new RuntimeCounter(store.LoadRuntimeTotal());
+            ShowRuntimeSettings();
+            UpdateRuntimeView();
             view.SetManualPoints(manualPoints);
-            view.NeedsAccount = store.Users().Count == 0;
             view.ActiveRecipe = store.ActiveRecipe() ?? store.Recipes()[0];
             await view.Station.ApplyAsync(view.ActiveRecipe);
             DataContext = view;
@@ -83,6 +117,7 @@ public partial class MainWindow : Window
             LoadRecipes(view.ActiveRecipe.Id);
             view.Use(view.Station);
             StartPolling();
+            await AutoConnectDevicesAsync();
         }
         catch (Exception ex)
         {
@@ -131,6 +166,126 @@ public partial class MainWindow : Window
         await polling;
         pollCancellation.Dispose();
         pollCancellation = null;
+        runtime.Lost();
+        SaveRuntime();
+        UpdateRuntimeView();
+    }
+
+    private async Task SampleRuntimeAsync(IStation station, CancellationToken cancellation)
+    {
+        if (station is not ModbusStation plc || runtimePoint is not ushort address)
+        {
+            runtime.Lost();
+            UpdateRuntimeView();
+            return;
+        }
+        try
+        {
+            bool on = await plc.ReadCoilAsync(address, cancellation);
+            if (cancellation.IsCancellationRequested || address != runtimePoint)
+                return;
+            if (runtime.Sample(on, System.Diagnostics.Stopwatch.GetTimestamp()))
+                SaveRuntime();
+            if (runtimeError is not null && runtimeError.StartsWith("读取", StringComparison.Ordinal))
+                runtimeError = null;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            runtime.Lost();
+            runtimeError = $"读取运行线圈失败。{ex.Message}";
+            if (runtime.Dirty)
+                SaveRuntime();
+        }
+        UpdateRuntimeView();
+    }
+
+    private void SaveRuntime()
+    {
+        if (!runtime.Dirty)
+            return;
+        try
+        {
+            store.SaveRuntimeTotal(runtime.Total);
+            runtime.MarkSaved();
+            if (runtimeError is not null && runtimeError.StartsWith("保存", StringComparison.Ordinal))
+                runtimeError = null;
+        }
+        catch (Exception ex) { runtimeError = $"保存运行时间失败，将重试。{ex.Message}"; }
+    }
+
+    private void UpdateRuntimeView()
+    {
+        string status = runtimeError ?? (runtimePoint is not ushort address ? "未配置运行地址"
+            : view.IsSimulation ? $"{FormatCoil(address)} · 模拟模式不计时"
+            : runtime.Running switch
+            {
+                true => $"{FormatCoil(address)} = 1 · 计时中",
+                false => $"{FormatCoil(address)} = 0 · 暂停",
+                null => $"{FormatCoil(address)} · 等待 PLC"
+            });
+        view.UpdateRuntime(runtime.Total, status);
+    }
+
+    private static string FormatCoil(ushort address) =>
+        ManualAddress.Format(address, address >= ManualPoints.OutputBase);
+
+    private void ShowRuntimeSettings()
+    {
+        RuntimeAddress.Text = runtimePoint is ushort address ? FormatCoil(address) : "";
+        RuntimeSettingsError.Text = "";
+    }
+
+    private void SaveRuntimeSettings_Click(object sender, RoutedEventArgs e)
+    {
+        if (!view.CanEditSystemSettings || closing)
+            return;
+        string text = RuntimeAddress.Text.Trim();
+        ushort? updated = null;
+        if (text.Length != 0)
+        {
+            if (!ManualAddress.TryParse(text, false, out ushort value) && !ManualAddress.TryParse(text, true, out value))
+            {
+                RuntimeSettingsError.Text = "请输入 M10、Y10 或从 0 开始的十进制线圈地址。";
+                RuntimeAddress.Focus();
+                return;
+            }
+            updated = value;
+        }
+        try { store.SaveRuntimePoint(updated); }
+        catch (Exception ex)
+        {
+            RuntimeSettingsError.Text = $"保存失败。{ex.Message}";
+            return;
+        }
+        if (updated != runtimePoint)
+        {
+            runtime.Lost();
+            SaveRuntime();
+            runtimeError = null;
+        }
+        runtimePoint = updated;
+        ShowRuntimeSettings();
+        UpdateRuntimeView();
+        view.Notice = updated is ushort address ? $"运行时间统计地址已设为 {FormatCoil(address)}。" : "已取消运行时间统计。";
+    }
+
+    private void ResetRuntime_Click(object sender, RoutedEventArgs e)
+    {
+        if (!view.CanEditSystemSettings || closing)
+            return;
+        if (MessageBox.Show(this, $"确定将累计运行时间 {RuntimeCounter.Format(runtime.Total)} 清零吗？", "运行时间清零",
+                MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
+        try { store.SaveRuntimeTotal(TimeSpan.Zero); }
+        catch (Exception ex)
+        {
+            RuntimeSettingsError.Text = $"清零失败。{ex.Message}";
+            return;
+        }
+        runtime.Reset();
+        UpdateRuntimeView();
+        view.Notice = "累计运行时间已清零。";
     }
 
     private async Task PollAsync(IStation station, CancellationToken cancellation)
@@ -139,6 +294,29 @@ public partial class MainWindow : Window
         {
             while (!cancellation.IsCancellationRequested)
             {
+                await SampleRuntimeAsync(station, cancellation);
+                if (station is ModbusStation plc && recordTrigger.HasValue)
+                {
+                    try
+                    {
+                        bool? saved = await plc.ProcessRecordTriggerAsync(test => store.Record(plc.Source, test), cancellation);
+                        if (saved.HasValue || storageError is not null)
+                        {
+                            bool recovered = storageError is not null;
+                            storageError = null;
+                            if (saved == true || (saved == false && recovered))
+                                NotifyArchived(station, "PLC 测试结果已保存，触发线圈已清零。");
+                            else if (recovered)
+                                NotifyArchived(station, "记录触发通讯已恢复。");
+                        }
+                    }
+                    catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { break; }
+                    catch (Exception ex)
+                    {
+                        storageError = $"记录触发处理失败，将重试。{ex.Message}";
+                        view.Notice = storageError;
+                    }
+                }
                 StationReading? reading = null;
                 try { reading = await station.ReadAsync(cancellation); }
                 catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { break; }
@@ -153,7 +331,7 @@ public partial class MainWindow : Window
                     view.Update(sample.Test, sample.Feedback, sample.UnknownFeedback);
                     if (sample.Test.Running || sample.Test.Stage == TestStage.Fault)
                         ReleaseHeldManual();
-                    if (sample.Test.Stage == TestStage.Completed)
+                    if (sample.Test.Stage == TestStage.Completed && UsesCompletionArchive(station))
                     {
                         try { Archive(station, sample.Test); }
                         catch (Exception ex)
@@ -215,9 +393,15 @@ public partial class MainWindow : Window
         bool saved = store.Record(station.Source, test);
         lastCompletedCycle = test.CycleId;
         storageError = null;
-        if (!saved)
-            return;
-        view.Notice = $"{(view.IsSimulation ? "模拟" : "PLC")}测试结果已保存。";
+        if (saved)
+            NotifyArchived(station);
+    }
+
+    private bool UsesCompletionArchive(IStation station) => station is not ModbusStation || !recordTrigger.HasValue;
+
+    private void NotifyArchived(IStation station, string? notice = null)
+    {
+        view.Notice = notice ?? $"{(station is SimulationStation ? "模拟" : "PLC")}测试结果已保存。";
         if (currentPage == 3)
             TryRefreshHistory();
     }
@@ -257,10 +441,31 @@ public partial class MainWindow : Window
         foreach (var button in Navigation.Children.OfType<Button>())
             button.Tag = (string)button.CommandParameter == index.ToString(CultureInfo.InvariantCulture) ? "active" : null;
         if (index == 3)
+        {
             TryRefreshHistory();
+            if (HistoryAddressTab.IsSelected)
+                RefreshHistoryPoints();
+        }
     }
 
-    private void Connection_Click(object sender, RoutedEventArgs e) => Navigate(6);
+    // Only devices that have been configured are connected; PLC/camera keep retrying after link loss.
+    private async Task AutoConnectDevicesAsync()
+    {
+        var peripherals = store!.LoadPeripherals();
+        if (!string.IsNullOrWhiteSpace(peripherals.Camera.Host))
+            _ = StationDevices.Camera.StartAutoConnectAsync(peripherals.Camera);
+        // Scanner opens once at startup, only when the saved COM port currently exists.
+        if (!string.IsNullOrWhiteSpace(peripherals.Scanner.Port) &&
+            System.IO.Ports.SerialPort.GetPortNames().Contains(peripherals.Scanner.Port, StringComparer.OrdinalIgnoreCase))
+            _ = StationDevices.Scanner.ConnectAsync(peripherals.Scanner).ContinueWith(
+                task => _ = task.Exception, TaskContinuationOptions.OnlyOnFaulted);
+
+        string configPath = Path.Combine(dataFolder, "plc.json");
+        if (!File.Exists(configPath))
+            return;
+        try { await SwitchStationAsync(PlcSettings.Load(configPath)); }
+        catch (Exception ex) { view.Notice = $"PLC 配置无效，保持模拟模式。{ex.Message}"; }
+    }
 
     private async Task SwitchStationAsync(PlcSettings? settings)
     {
@@ -279,7 +484,7 @@ public partial class MainWindow : Window
                 if (settings is not null)
                 {
                     settings.Validate();
-                    StationDevices.Plc.Configure(settings, monitorPoints, manualPoints, recipePoints, inspectionPoints);
+                    StationDevices.Plc.Configure(settings, monitorPoints, manualPoints, recipePoints, inspectionPoints, barcodePoint, recordTrigger);
                 }
             }
             catch
@@ -318,8 +523,8 @@ public partial class MainWindow : Window
         await PerformAsync(async () =>
         {
             await FlushManualReleaseAsync();
-            var dialog = new ManualPointDialog(action) { Owner = this };
-            if (dialog.ShowDialog() != true || dialog.Point is not { } point || point == action.Point)
+            var dialog = new PointAddressDialog(action) { Owner = this };
+            if (dialog.ShowDialog() != true || dialog.ManualResult is not { } point || point == action.Point)
                 return;
             if (view.Snapshot.Running)
                 throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改点位。");
@@ -331,7 +536,7 @@ public partial class MainWindow : Window
             {
                 string configPath = Path.Combine(dataFolder, "plc.json");
                 var settings = File.Exists(configPath) ? PlcSettings.Load(configPath) : new PlcSettings();
-                _ = InspectionPoints.Validate(settings, inspectionPoints, updated);
+                _ = InspectionPoints.Validate(settings, inspectionPoints, updated, recordTrigger);
                 store.SaveManualPoints(updated);
             }
             manualPoints = updated;
@@ -445,33 +650,54 @@ public partial class MainWindow : Window
 
     private async void EditMonitorPoint_Click(object sender, RoutedEventArgs e)
     {
-        if (!view.CanEditMonitorPoints || closing
-            || sender is not Button { CommandParameter: MonitorPointId id })
-            return;
+        if (sender is Button { CommandParameter: MonitorPointId id })
+            await EditMonitorPointAsync(id);
+    }
 
+    private PlcSettings MonitorSettings()
+    {
+        string configPath = Path.Combine(dataFolder, "plc.json");
+        return (view.Station as ModbusStation)?.Settings
+            ?? (File.Exists(configPath) ? PlcSettings.Load(configPath) : new PlcSettings());
+    }
+
+    private async Task EditMonitorPointAsync(MonitorPointId id, string? historyLabel = null)
+    {
+        if (!view.CanEditMonitorPoints || closing)
+            return;
         await PerformAsync(async () =>
         {
             var station = view.Station as ModbusStation;
-            string configPath = Path.Combine(dataFolder, "plc.json");
-            var settings = station?.Settings ?? (File.Exists(configPath) ? PlcSettings.Load(configPath) : new PlcSettings());
+            var settings = MonitorSettings();
             var definition = MonitorPointDefinition.For(id);
+            if (historyLabel is not null)
+                definition = definition with { Label = historyLabel };
             var current = monitorPoints.GetValueOrDefault(id) ?? definition.DefaultAt(settings.TelemetryAddress);
-            var dialog = new MonitorPointDialog(definition, current) { Owner = this };
-            if (dialog.ShowDialog() != true || dialog.Point is not { } point || point == current)
+            var dialog = new PointAddressDialog(definition, current) { Owner = this };
+            if (dialog.ShowDialog() != true || dialog.MonitorResult == current)
                 return;
 
-            var updated = new Dictionary<MonitorPointId, MonitorPoint>(monitorPoints) { [id] = point };
+            var updated = new Dictionary<MonitorPointId, MonitorPoint>(monitorPoints);
+            var point = dialog.MonitorResult;
+            if (point is not null)
+                updated[id] = point;
+            else
+                updated.Remove(id);
+
             if (station is not null)
                 await station.UpdateMonitorPointsAsync(updated, () => store.SaveMonitorPoints(updated));
             else
             {
-                var monitoring = new MonitorReadPlan(settings, updated);
+                var monitoring = new MonitorReadPlan(settings, updated, barcodePoint);
                 _ = new RecipeWritePlan(settings, recipePoints, monitoring);
                 store.SaveMonitorPoints(updated);
             }
 
             monitorPoints = updated;
-            view.Notice = $"{definition.Label}已保存 · 地址 {point.Address} · {point.DataType}";
+            if (HistoryAddressTab.IsSelected)
+                RefreshHistoryPoints();
+            view.Notice = point is null ? $"{definition.Label}已取消采集。"
+                : $"{definition.Label}已保存 · 地址 {point.Address} · {point.DataType}";
         });
     }
 
@@ -488,14 +714,14 @@ public partial class MainWindow : Window
             var definition = RecipePoint.All[id];
             ushort? defaultAddress = definition.DefaultAddress(settings);
             bool hasOverride = recipePoints.TryGetValue(id, out ushort existing);
-            var dialog = new RecipePointDialog(definition, hasOverride ? existing : defaultAddress, defaultAddress) { Owner = this };
+            var dialog = new PointAddressDialog(definition, hasOverride ? existing : defaultAddress, defaultAddress) { Owner = this };
             if (dialog.ShowDialog() != true)
                 return;
             if (view.Snapshot.Running)
                 throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改地址。");
 
             var updated = new Dictionary<RecipePointId, ushort>(recipePoints);
-            if (dialog.Address is ushort address && address != defaultAddress)
+            if (dialog.RecipeAddress is ushort address && address != defaultAddress)
                 updated[id] = address;
             else
                 updated.Remove(id);
@@ -504,11 +730,11 @@ public partial class MainWindow : Window
                 await station.UpdateRecipePointsAsync(updated, () => store.SaveRecipePoints(updated));
             else
             {
-                _ = new RecipeWritePlan(settings, updated, new MonitorReadPlan(settings, monitorPoints));
+                _ = new RecipeWritePlan(settings, updated, new MonitorReadPlan(settings, monitorPoints, barcodePoint));
                 store.SaveRecipePoints(updated);
             }
             recipePoints = updated;
-            view.Notice = (dialog.Address ?? defaultAddress) is ushort saved
+            view.Notice = (dialog.RecipeAddress ?? defaultAddress) is ushort saved
                 ? $"{definition.Label}写入地址已设为 {saved}。" : $"{definition.Label}写入地址已清除。";
         });
     }
@@ -548,11 +774,51 @@ public partial class MainWindow : Window
                 if (storageError is not null)
                     throw new InvalidOperationException(storageError);
                 var reading = await view.Station.ReadAsync(CancellationToken.None);
-                if (reading.Test.Stage == TestStage.Completed)
+                if (reading.Test.Stage == TestStage.Completed && UsesCompletionArchive(view.Station))
                     Archive(view.Station, reading.Test);
                 await view.Station.ResetAsync();
                 view.Notice = view.IsSimulation ? "模拟命令已执行。" : "PLC 已接收命令，请查看设备反馈。";
             });
+    }
+
+    private async void EditResetAddress_Click(object sender, RoutedEventArgs e)
+    {
+        if (!view.CanEditMonitorPoints || closing)
+            return;
+
+        await PerformAsync(async () =>
+        {
+            var settings = MonitorSettings();
+            ushort? defaultAddress = settings.Commands.TryGetValue("reset", out ushort address) ? address : null;
+            var current = inspectionPoints.GetValueOrDefault("reset")?.WriteAddress;
+            var dialog = new PointAddressDialog(current, defaultAddress) { Owner = this };
+            if (dialog.ShowDialog() != true)
+                return;
+            if (view.Snapshot.Running)
+                throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改复位地址。");
+
+            var selected = dialog.ResetAddress;
+            var overrideAddress = selected == defaultAddress ? null : selected;
+            if (overrideAddress == current)
+                return;
+
+            var updated = new Dictionary<string, InspectionPoint>(inspectionPoints);
+            if (overrideAddress is ushort custom)
+                updated["reset"] = new InspectionPoint(custom, null);
+            else
+                updated.Remove("reset");
+
+            if (view.Station is ModbusStation station)
+                await station.UpdateInspectionPointsAsync(updated, () => store.SaveInspectionPoints(updated));
+            else
+            {
+                _ = InspectionPoints.Validate(settings, updated, manualPoints, recordTrigger);
+                store.SaveInspectionPoints(updated);
+            }
+            inspectionPoints = updated;
+            view.Notice = (overrideAddress ?? defaultAddress) is ushort saved
+                ? $"复位地址已设为 {ManualAddress.Format(saved, false)}。" : "复位地址已清除。";
+        });
     }
 
     private async void InspectionSwitch_Click(object sender, RoutedEventArgs e)
@@ -587,8 +853,8 @@ public partial class MainWindow : Window
             string configPath = Path.Combine(dataFolder, "plc.json");
             var settings = station?.Settings ?? (File.Exists(configPath) ? PlcSettings.Load(configPath) : new PlcSettings());
             var current = InspectionPoints.Resolve(settings, inspectionPoints, item.Key);
-            var dialog = new ManualPointDialog(item.Label, current.WriteAddress, current.FeedbackAddress, true) { Owner = this };
-            if (dialog.ShowDialog() != true || dialog.Addresses is not { } point || point == current)
+            var dialog = new PointAddressDialog(item.Label, current.WriteAddress, current.FeedbackAddress, true) { Owner = this };
+            if (dialog.ShowDialog() != true || dialog.InspectionResult is not { } point || point == current)
                 return;
             if (view.Snapshot.Running)
                 throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改地址。");
@@ -605,7 +871,7 @@ public partial class MainWindow : Window
                 await station.UpdateInspectionPointsAsync(updated, () => store.SaveInspectionPoints(updated));
             else
             {
-                _ = InspectionPoints.Validate(settings, updated, manualPoints);
+                _ = InspectionPoints.Validate(settings, updated, manualPoints, recordTrigger);
                 store.SaveInspectionPoints(updated);
             }
             inspectionPoints = updated;
@@ -697,18 +963,28 @@ public partial class MainWindow : Window
             if (!view.Recipes.Contains(recipe))
                 throw new InvalidOperationException("请先保存配方，再启用或下发。");
             var station = view.Station;
+            string answer;
+            try { answer = await StationDevices.Camera.RequestAsync(recipe.CameraCommand, TimeSpan.FromSeconds(3)); }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"相机命令“{recipe.CameraCommand}”未成功，配方未启用。{ex.Message}", ex);
+            }
+            if (answer.Equals("fail", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"相机切换配方失败（返回 fail），配方未启用。");
+            if (!answer.Equals("OK", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"相机返回“{answer}”，无法确认切换结果，配方未启用。");
             if (view.IsSimulation)
             {
                 store.SaveRecipe(recipe, true);
                 await station.ApplyAsync(recipe);
                 view.ActiveRecipe = recipe;
-                view.Notice = $"已启用模拟配方“{recipe.Name}”。";
+                view.Notice = $"相机已切换（{recipe.CameraCommand} → OK），并启用模拟配方“{recipe.Name}”。";
             }
             else
             {
                 store.SaveRecipe(recipe, true);
                 view.ActiveRecipe = recipe;
-                view.Notice = $"已设为当前配方，正在下发“{recipe.Name}”。";
+                view.Notice = $"相机已切换（{recipe.CameraCommand} → OK），正在下发“{recipe.Name}”。";
                 view.SetSendingRecipe(true);
                 recipeDispatch = DispatchRecipeAsync(station, recipe);
             }
@@ -764,6 +1040,111 @@ public partial class MainWindow : Window
     {
         try { RefreshHistory(); }
         catch (Exception ex) { view.Notice = ex.Message; }
+    }
+
+    private void HistoryTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (e.Source == sender && store is not null && HistoryAddressTab.IsSelected)
+            RefreshHistoryPoints();
+    }
+
+    private void RefreshHistoryPoints()
+    {
+        try
+        {
+            var settings = MonitorSettings();
+            HistoryRegisterArea.Text = settings.UseInputRegisters ? "输入寄存器 · FC04" : "保持寄存器 · FC03";
+            var selectedPoint = HistoryAddressGrid.SelectedValue;
+            var barcode = barcodePoint ?? BarcodePoint.DefaultAt(settings.TelemetryAddress);
+            var barcodeRow = new HistoryPointRow(null, "二维码", barcode.Address.ToString(CultureInfo.InvariantCulture),
+                $"UTF-8 · {barcode.WordCount} 字", barcodePoint is null ? "默认" : "已配置");
+            var triggerRow = new HistoryPointRow(null, RecordTriggerLabel,
+                recordTrigger is ushort trigger ? ManualAddress.Format(trigger, false) : "—",
+                "线圈 · Bool", recordTrigger.HasValue ? "已配置" : "按测试完成记录");
+            HistoryAddressGrid.ItemsSource = HistoryFields.Select(field =>
+            {
+                var custom = monitorPoints.GetValueOrDefault(field.Id);
+                var point = custom ?? MonitorPointDefinition.For(field.Id).DefaultAt(settings.TelemetryAddress);
+                return new HistoryPointRow(field.Id, field.Label, point?.Address.ToString(CultureInfo.InvariantCulture) ?? "—",
+                    point?.DataType.ToString() ?? "—", custom is not null ? "已配置" : point is not null ? "默认" : "未配置");
+            }).Prepend(barcodeRow).Prepend(triggerRow).ToArray();
+            HistoryAddressGrid.SelectedValue = selectedPoint;
+        }
+        catch (Exception ex)
+        {
+            HistoryRegisterArea.Text = "PLC 配置读取失败";
+            HistoryAddressGrid.ItemsSource = null;
+            view.Notice = ex.Message;
+        }
+    }
+
+    private async void EditHistoryPoint_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: HistoryPointRow row })
+            return;
+        if (row.Id is MonitorPointId id)
+            await EditMonitorPointAsync(id, row.Label);
+        else if (row.Label == RecordTriggerLabel)
+            await EditRecordTriggerAsync();
+        else
+            await EditBarcodePointAsync();
+    }
+
+    private async Task EditRecordTriggerAsync()
+    {
+        if (!view.CanEditMonitorPoints || closing)
+            return;
+        await PerformAsync(async () =>
+        {
+            var dialog = new PointAddressDialog(recordTrigger) { Owner = this };
+            if (dialog.ShowDialog() != true || dialog.RecordTriggerAddress == recordTrigger)
+                return;
+
+            var updated = dialog.RecordTriggerAddress;
+            if (view.Station is ModbusStation station)
+                await station.UpdateRecordTriggerAsync(updated, () => store.SaveRecordTrigger(updated));
+            else
+            {
+                _ = InspectionPoints.Validate(MonitorSettings(), inspectionPoints, manualPoints, updated);
+                store.SaveRecordTrigger(updated);
+            }
+
+            recordTrigger = updated;
+            storageError = null;
+            RefreshHistoryPoints();
+            view.Notice = updated is ushort address ? $"记录触发已设为 {ManualAddress.Format(address, false)}。"
+                : "记录触发已清除，恢复按测试完成状态存档。";
+        });
+    }
+
+    private async Task EditBarcodePointAsync()
+    {
+        if (!view.CanEditMonitorPoints || closing)
+            return;
+        await PerformAsync(async () =>
+        {
+            var settings = MonitorSettings();
+            var defaultPoint = BarcodePoint.DefaultAt(settings.TelemetryAddress);
+            var dialog = new PointAddressDialog(barcodePoint ?? defaultPoint, defaultPoint) { Owner = this };
+            if (dialog.ShowDialog() != true || dialog.BarcodeResult is not { } point)
+                return;
+
+            var updated = point == defaultPoint ? null : point;
+            if (updated == barcodePoint)
+                return;
+
+            if (view.Station is ModbusStation station)
+                await station.UpdateBarcodePointAsync(updated, () => store.SaveBarcodePoint(updated));
+            else
+            {
+                _ = new RecipeWritePlan(settings, recipePoints, new MonitorReadPlan(settings, monitorPoints, updated));
+                store.SaveBarcodePoint(updated);
+            }
+
+            barcodePoint = updated;
+            RefreshHistoryPoints();
+            view.Notice = $"二维码点位已保存 · 地址 {point.Address} · {point.WordCount} 个寄存器";
+        });
     }
 
     private async void Query_Click(object sender, RoutedEventArgs e) => await QueryAsync();
@@ -824,49 +1205,51 @@ public partial class MainWindow : Window
         });
     }
 
-    private async void Login_Click(object sender, RoutedEventArgs e)
+    private void Login_Click(object sender, RoutedEventArgs e) => Login();
+
+    private void LoginField_KeyDown(object sender, KeyEventArgs e)
     {
-        await PerformAsync(async () =>
+        if (e.Key != Key.Enter || e.IsRepeat)
+            return;
+        e.Handled = true;
+        Login();
+    }
+
+    private void Login()
+    {
+        if (!view.NotBusy || view.IsAdministrator || closing)
+            return;
+        string password = LoginPassword.Password;
+        LoginPassword.Clear();
+        if (!string.Equals(password, AdministratorPassword, StringComparison.Ordinal))
         {
-            bool setup = view.NeedsAccount;
-            var dialog = new CredentialsDialog(setup ? "创建负责人" : "登录", setup, false) { Owner = this };
-            if (dialog.ShowDialog() != true)
-                return;
-            string name = dialog.UserName;
-            string password = dialog.Password;
-            if (setup)
-                await Task.Run(() => store.CreateUser(name, password, UserRole.Supervisor, true));
-            view.NeedsAccount = false;
-            view.User = await Task.Run(() => store.Authenticate(name, password))
-                ?? throw new InvalidOperationException("用户名或密码错误，或账号已停用。");
-            view.Notice = $"已登录为 {view.OperatorLabel}。";
-        });
+            SetLoginError(password.Length == 0 ? "请输入密码。" : "密码错误。");
+            LoginPassword.Focus();
+            return;
+        }
+        SetLoginError("");
+        view.IsAdministrator = true;
+        view.Notice = "管理员已登录。";
+    }
+
+    private void SetLoginError(string message)
+    {
+        LoginError.Text = message;
+        LoginError.Visibility = message.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void Logout_Click(object sender, RoutedEventArgs e)
     {
         if (!view.CanLogout)
             return;
-        view.User = null;
+        view.IsAdministrator = false;
+        LoginPassword.Clear();
+        SetLoginError("");
         view.Notice = "已退出登录。";
-    }
-
-    private void Users_Click(object sender, RoutedEventArgs e)
-    {
-        if (view.CanManageUsers && view.User is { } user)
-            new UsersDialog(store, user) { Owner = this }.ShowDialog();
     }
 
     private bool Confirm(string message) =>
         MessageBox.Show(this, message, "灰尘负载测试台", MessageBoxButton.YesNo, MessageBoxImage.Question,
             MessageBoxResult.No) == MessageBoxResult.Yes;
 
-    internal static void AddDialogButton(Panel panel, string text, Action action, bool primary = false)
-    {
-        var button = new Button { Content = text, Margin = new Thickness(0, 0, 8, 0) };
-        if (primary)
-            button.Style = (Style)Application.Current.FindResource("Primary");
-        button.Click += (_, _) => action();
-        panel.Children.Add(button);
-    }
 }

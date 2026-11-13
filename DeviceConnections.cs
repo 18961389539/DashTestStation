@@ -26,6 +26,14 @@ internal sealed class CameraConnection
     private CancellationTokenSource? cancellation;
     private Task receiving = Task.CompletedTask;
     private volatile DeviceStatus status = new("未连接");
+    private readonly object replyLock = new();
+    private readonly StringBuilder replyText = new();
+    private TaskCompletionSource<string>? reply;
+    private long lastReceivedTicks;
+    // Set after a successful connect; cleared by DisconnectAsync. Reconnects use it after a link loss.
+    private CameraSettings? target;
+    private int generation;
+    internal TimeSpan ReconnectDelay { get; set; } = TimeSpan.FromSeconds(2);
     internal DeviceStatus Status => status;
 
     internal async Task ConnectAsync(CameraSettings settings)
@@ -34,25 +42,89 @@ internal sealed class CameraConnection
         try
         {
             await CloseAsync();
+            generation++;
+            target = null;
             status = new("连接中", $"{settings.Host}:{settings.Port}");
-            var socket = new TcpClient { NoDelay = true };
-            try
-            {
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                await socket.ConnectAsync(settings.Host, settings.Port, timeout.Token).ConfigureAwait(false);
-                client = socket;
-                cancellation = new CancellationTokenSource();
-                status = new("已连接", $"{settings.Host}:{settings.Port}");
-                receiving = ReceiveAsync(socket, cancellation.Token);
-            }
+            try { await OpenAsync(settings).ConfigureAwait(false); }
             catch (Exception ex)
             {
-                socket.Dispose();
                 status = new("连接失败", ex is OperationCanceledException ? "TCP 连接超时。" : ex.Message);
                 throw new IOException(status.Detail, ex);
             }
+            target = settings;
         }
         finally { gate.Release(); }
+    }
+
+    // Startup connect: on failure keep retrying in the background instead of throwing.
+    internal async Task StartAutoConnectAsync(CameraSettings settings)
+    {
+        int started;
+        await gate.WaitAsync();
+        try
+        {
+            await CloseAsync();
+            started = ++generation;
+            target = settings;
+            status = new("连接中", $"{settings.Host}:{settings.Port}");
+            try
+            {
+                await OpenAsync(settings).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception ex)
+            {
+                status = new("重连中", $"{settings.Host}:{settings.Port} 连接失败，稍后重试。" +
+                    (ex is OperationCanceledException ? "TCP 连接超时。" : ex.Message));
+            }
+        }
+        finally { gate.Release(); }
+        _ = ReconnectAsync(started);
+    }
+
+    private async Task OpenAsync(CameraSettings settings)
+    {
+        var socket = new TcpClient { NoDelay = true };
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            await socket.ConnectAsync(settings.Host, settings.Port, timeout.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+        client = socket;
+        cancellation = new CancellationTokenSource();
+        status = new("已连接", $"{settings.Host}:{settings.Port}");
+        receiving = ReceiveAsync(socket, cancellation.Token, generation);
+    }
+
+    private async Task ReconnectAsync(int lostGeneration)
+    {
+        while (true)
+        {
+            await Task.Delay(ReconnectDelay).ConfigureAwait(false);
+            await gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (lostGeneration != generation || target is not { } settings)
+                    return;
+                await CloseAsync(status).ConfigureAwait(false);
+                try
+                {
+                    await OpenAsync(settings).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    status = new("重连中", $"{settings.Host}:{settings.Port} 重连失败，稍后重试。" +
+                        (ex is OperationCanceledException ? "TCP 连接超时。" : ex.Message));
+                }
+            }
+            finally { gate.Release(); }
+        }
     }
 
     internal async Task SendAsync(string text)
@@ -68,14 +140,112 @@ internal sealed class CameraConnection
         finally { gate.Release(); }
     }
 
-    internal async Task DisconnectAsync()
+    internal async Task<string> RequestAsync(string text, TimeSpan timeout)
     {
         await gate.WaitAsync();
-        try { await CloseAsync(); }
+        try
+        {
+            if (client is null || status.State != "已连接")
+                throw new InvalidOperationException("请先连接相机。");
+            var pending = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await ArmAfterQuietAsync(client, pending).ConfigureAwait(false);
+            try
+            {
+                using var expiry = new CancellationTokenSource(timeout);
+                await client.GetStream().WriteAsync(Encoding.UTF8.GetBytes(text), expiry.Token).ConfigureAwait(false);
+                return await pending.Task.WaitAsync(expiry.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                string received;
+                lock (replyLock)
+                    received = replyText.ToString().Trim();
+                throw new TimeoutException(received.Length == 0
+                    ? $"相机未在 {timeout.TotalSeconds:0} 秒内回复。"
+                    : $"相机回复“{received}”无法识别。");
+            }
+            finally
+            {
+                lock (replyLock)
+                {
+                    reply = null;
+                    replyText.Clear();
+                }
+            }
+        }
         finally { gate.Release(); }
     }
 
-    private async Task CloseAsync()
+    // Data that arrived before the command (in flight, in the socket buffer, or being processed by
+    // the receive loop) must not be taken as this command's reply. Wait until the link has been idle
+    // for a short period measured from the request, then arm the reply before the command is written.
+    private async Task ArmAfterQuietAsync(TcpClient socket, TaskCompletionSource<string> pending)
+    {
+        const long QuietMs = 50;
+        long start = Environment.TickCount64;
+        long deadline = start + 1000;
+        while (true)
+        {
+            if (status.State != "已连接")
+                throw new InvalidOperationException("请先连接相机。");
+            lock (replyLock)
+            {
+                int available;
+                try { available = socket.Available; }
+                catch (Exception ex) when (ex is ObjectDisposedException or SocketException)
+                {
+                    throw new IOException("相机连接已中断。", ex);
+                }
+                if (available == 0 && Environment.TickCount64 - Math.Max(start, lastReceivedTicks) >= QuietMs)
+                {
+                    replyText.Clear();
+                    reply = pending;
+                    return;
+                }
+            }
+            if (Environment.TickCount64 > deadline)
+                throw new IOException("相机持续发送数据，无法确认本次切换的回复。");
+            await Task.Delay(10).ConfigureAwait(false);
+        }
+    }
+
+    internal async Task DisconnectAsync()
+    {
+        await gate.WaitAsync();
+        try
+        {
+            generation++;
+            target = null;
+            await CloseAsync();
+        }
+        finally { gate.Release(); }
+    }
+
+    private void OnReceived(ReadOnlySpan<char> text)
+    {
+        lock (replyLock)
+        {
+            lastReceivedTicks = Environment.TickCount64;
+            if (reply is null)
+                return;
+            replyText.Append(text);
+            string received = replyText.ToString();
+            string trimmed = received.Trim();
+            if (trimmed.Equals("OK", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.Equals("fail", StringComparison.OrdinalIgnoreCase))
+                reply.TrySetResult(trimmed);
+            else if (received.IndexOfAny(['\r', '\n']) >= 0 && trimmed.Length != 0)
+                reply.TrySetResult(trimmed.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)[0].Trim());
+        }
+    }
+
+    private void FailReply(string message)
+    {
+        lock (replyLock)
+            reply?.TrySetException(new IOException(message));
+    }
+
+    private async Task CloseAsync(DeviceStatus? keep = null)
     {
         cancellation?.Cancel();
         client?.Dispose();
@@ -83,12 +253,25 @@ internal sealed class CameraConnection
         cancellation?.Dispose();
         cancellation = null;
         client = null;
-        status = new("未连接");
+        status = keep ?? new("未连接");
     }
 
-    private async Task ReceiveAsync(TcpClient socket, CancellationToken token)
+    private async Task ReceiveAsync(TcpClient socket, CancellationToken token, int linkGeneration)
+    {
+        try { await ReadUntilClosedAsync(socket, token).ConfigureAwait(false); }
+        finally { socket.Dispose(); }
+        if (!token.IsCancellationRequested)
+        {
+            status = status with { State = "重连中", Detail = $"{status.Detail} 正在自动重连。" };
+            _ = ReconnectAsync(linkGeneration);
+        }
+    }
+
+    private async Task ReadUntilClosedAsync(TcpClient socket, CancellationToken token)
     {
         var buffer = new byte[256];
+        var chars = new char[Encoding.UTF8.GetMaxCharCount(buffer.Length)];
+        var decoder = Encoding.UTF8.GetDecoder();
         try
         {
             var stream = socket.GetStream();
@@ -98,15 +281,18 @@ internal sealed class CameraConnection
                 var hex = Convert.ToHexString(buffer.AsSpan(0, length));
                 status = status with { LastReceived = string.Join(" ", Enumerable.Range(0, length)
                     .Select(i => hex.Substring(i * 2, 2))) };
+                int count = decoder.GetChars(buffer, 0, length, chars, 0);
+                OnReceived(chars.AsSpan(0, count));
             }
             status = status with { State = "已断开", Detail = "相机关闭了 TCP 连接。" };
+            FailReply(status.Detail);
         }
         catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or InvalidOperationException)
         {
             if (!token.IsCancellationRequested)
                 status = status with { State = "连接异常", Detail = ex.Message };
+            FailReply(ex.Message);
         }
-        finally { socket.Dispose(); }
     }
 }
 

@@ -4,22 +4,24 @@ namespace DustLoadScada;
 
 public sealed class StationView : Bindable
 {
+    public const string AdministratorName = "admin";
     private IStation station = new SimulationStation();
     private TestSnapshot snapshot = new();
     private bool online;
     private bool busy;
     private bool sendingRecipe;
-    private UserAccount? user;
+    private bool isAdministrator;
     private string notice = "模拟模式已就绪。";
     private string connectionError = "";
     private Recipe activeRecipe = new();
     private Recipe draft = new();
     private List<Recipe> recipes = [];
     private List<TestRecord> records = [];
-    private bool needsAccount;
     private bool manualOnline;
     private bool manualBlockedByStage;
     private string manualError = "";
+    private string runtimeLabel = "0:00:00";
+    private string runtimeStatus = "未配置运行地址";
 
     public StationView()
     {
@@ -40,8 +42,7 @@ public sealed class StationView : Bindable
     public bool IsSimulation => station is SimulationStation;
     public string Notice { get => notice; set => Set(ref notice, value); }
     public bool NotBusy => !busy;
-    public bool NeedsAccount { get => needsAccount; set { if (Set(ref needsAccount, value)) Refresh(); } }
-    public UserAccount? User { get => user; set { if (Set(ref user, value)) Refresh(); } }
+    public bool IsAdministrator { get => isAdministrator; set { if (Set(ref isAdministrator, value)) Refresh(); } }
     public Recipe ActiveRecipe { get => activeRecipe; set { if (Set(ref activeRecipe, value)) Refresh(); } }
     public Recipe Draft { get => draft; set => Set(ref draft, value); }
     public List<Recipe> Recipes { get => recipes; set => Set(ref recipes, value); }
@@ -72,30 +73,26 @@ public sealed class StationView : Bindable
     public string ModelLabel => string.IsNullOrEmpty(snapshot.Model) ? IsSimulation ? activeRecipe.Model : "—" : snapshot.Model;
     public bool CanSwitchMode => !busy && !sendingRecipe && !snapshot.Running;
     public bool CanReadPlcTest => station is ModbusStation && !busy;
-    public bool CanWritePlcTest => station is ModbusStation plc && plc.Settings.EnableWrites &&
-        CanSwitchMode && online && snapshot.Stage != TestStage.Fault && user?.Role == UserRole.Supervisor;
+    public bool CanWritePlcTest => station is ModbusStation &&
+        CanSwitchMode && online && snapshot.Stage != TestStage.Fault && IsAdministrator;
     public bool CanSimulate => IsSimulation && CanSwitchMode;
-    private bool CanOperate => !busy && online && !snapshot.Running && (IsSimulation || user is not null);
+    private bool CanOperate => !busy && online && !snapshot.Running && (IsSimulation || IsAdministrator);
     public bool CanReset => CanOperate && station.Supports("reset");
-    private bool HasRecipeAccess => user?.Role == UserRole.Supervisor || (IsSimulation && needsAccount);
-    public bool CanEditMonitorPoints => CanSwitchMode && HasRecipeAccess;
+    public bool CanEditMonitorPoints => CanSwitchMode && IsAdministrator;
     public bool CanUseManual => !busy && manualOnline && !manualBlockedByStage
-        && (IsSimulation || user is not null) && station.CanWriteManual;
-    public bool CanEditRecipe => !busy && !snapshot.Running && HasRecipeAccess;
+        && (IsSimulation || IsAdministrator);
+    public bool CanEditRecipe => !busy && !snapshot.Running && IsAdministrator;
     public bool CanApplyRecipe => CanEditRecipe && !sendingRecipe && online && station.CanApplyRecipe && snapshot.Stage != TestStage.Fault;
-    public bool CanDelete => !busy && user?.Role == UserRole.Supervisor;
-    public bool CanManageUsers => CanDelete;
-    public bool CanLogout => !busy && user is not null;
-    public string OperatorLabel => user is null ? "未登录" : $"{user.Name} · {user.RoleText}";
-    public string AccessHint => needsAccount ? "首次使用，请创建负责人账号。" : "负责人可管理用户、PLC 配方及历史记录。";
-    public string LoginLabel => needsAccount ? "创建负责人" : user is null ? "登录" : "切换用户";
+    public bool CanDelete => !busy && IsAdministrator;
+    public bool CanLogout => !busy && IsAdministrator;
+    public string OperatorLabel => IsAdministrator ? $"{AdministratorName} · 管理员" : "未登录";
     public string ActiveRecipeLabel => activeRecipe.Name;
     public string ApplyLabel => IsSimulation ? "启用配方" : "启用并下发 PLC";
-    public string RecipeHint => !HasRecipeAccess ? "请登录负责人账号编辑" :
-        IsSimulation ? "模拟配方" : station.CanApplyRecipe ? "PLC 配方" : "本地配方 · PLC 写入未启用";
+    public string RecipeHint => !IsAdministrator ? "请登录管理员账号编辑" :
+        IsSimulation ? "模拟配方" : station.CanApplyRecipe ? "PLC 配方" : "本地配方 · 未配置 PLC 配方地址";
     public string ManualHint => IsSimulation ? "模拟设备 · 按下写 1，松开写 0" : !manualOnline ? "Y 输出反馈不可用" :
         manualBlockedByStage ? "PLC 正在测试或处于故障状态" :
-        !station.CanWriteManual ? "手动写入未启用" : user is null ? "请先登录" : "按下写 1，松开写 0";
+        !IsAdministrator ? "请先登录" : "按下写 1，松开写 0";
     public string ManualError { get => manualError; set => Set(ref manualError, value); }
     public bool HistoryEmpty => records.Count == 0;
     public string HistoryCount => $"共 {records.Count} 条记录";
@@ -104,6 +101,16 @@ public sealed class StationView : Bindable
     {
         busy = value;
         Refresh();
+    }
+
+    public string RuntimeLabel { get => runtimeLabel; private set => Set(ref runtimeLabel, value); }
+    public string RuntimeStatus { get => runtimeStatus; private set => Set(ref runtimeStatus, value); }
+    public bool CanEditSystemSettings => !busy && IsAdministrator;
+
+    public void UpdateRuntime(TimeSpan total, string status)
+    {
+        RuntimeLabel = RuntimeCounter.Format(total);
+        RuntimeStatus = status;
     }
 
     public void SetSendingRecipe(bool value)

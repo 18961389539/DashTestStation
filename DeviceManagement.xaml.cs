@@ -63,8 +63,6 @@ public partial class DeviceManagement : UserControl
         PlcHost.Text = plc.Host;
         PlcPort.Text = plc.Port.ToString();
         PlcUnit.Text = plc.UnitId.ToString();
-        PlcWrites.IsChecked = plc.EnableWrites;
-        PlcManualWrites.IsChecked = plc.EnableManualWrites;
         ScannerPort.Text = peripherals.Scanner.Port;
         ScannerBaud.Text = peripherals.Scanner.BaudRate.ToString();
         ScannerDataBits.SelectedItem = peripherals.Scanner.DataBits;
@@ -131,9 +129,7 @@ public partial class DeviceManagement : UserControl
         {
             Host = Host(PlcHost.Text, "PLC"),
             Port = Number(PlcPort.Text, 1, 65535, "PLC 端口"),
-            UnitId = (byte)Number(PlcUnit.Text, 0, 255, "PLC 站号"),
-            EnableWrites = PlcWrites.IsChecked == true,
-            EnableManualWrites = PlcWrites.IsChecked == true && PlcManualWrites.IsChecked == true
+            UnitId = (byte)Number(PlcUnit.Text, 0, 255, "PLC 站号")
         };
     }
 
@@ -207,8 +203,8 @@ public partial class DeviceManagement : UserControl
             ? Visibility.Visible : Visibility.Collapsed;
         PlcTestHint.Text = area switch
         {
-            PlcTestArea.HoldingRegisters => "写入范围 0–65535 · 需负责人及写入权限",
-            PlcTestArea.Coils => "0 关 / 1 开 · 需负责人及写入权限",
+            PlcTestArea.HoldingRegisters => "写入范围 0–65535 · 需管理员登录",
+            PlcTestArea.Coils => "0 关 / 1 开 · 需管理员登录",
             _ => "该数据区只读。"
         };
         PlcTestValue.Clear();
