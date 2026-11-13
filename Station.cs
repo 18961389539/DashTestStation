@@ -120,6 +120,10 @@ public sealed class ModbusStation : IStation
     private readonly HashSet<ushort> heldAddresses = [];
     private readonly HashSet<ushort> pendingReleases = [];
     private readonly SemaphoreSlim bus = new(1, 1);
+    private readonly SemaphoreSlim scannerTransaction = new(1, 1);
+    private ScannerTriggerSettings scannerTrigger = new();
+    private ScannerResult? pendingScannerResult;
+    private bool scannerAcknowledging;
     private IModbusMaster? master;
     private TcpClient? client;
 
@@ -135,8 +139,12 @@ public sealed class ModbusStation : IStation
     internal void Configure(PlcSettings configuration, IReadOnlyDictionary<MonitorPointId, MonitorPoint>? monitorPoints,
         IReadOnlyDictionary<ManualPointId, ManualPoint>? manualOverrides,
         IReadOnlyDictionary<RecipePointId, ushort>? recipePoints, IReadOnlyDictionary<string, InspectionPoint>? inspectionPoints,
-        BarcodePoint? barcodePoint = null, ushort? recordTrigger = null)
+        BarcodePoint? barcodePoint = null, ushort? recordTrigger = null, ScannerTriggerSettings? scannerSettings = null)
     {
+        if (pendingScannerResult is not null)
+            throw new InvalidOperationException("扫码结果尚未确认写回，请等待通讯恢复后再切换 PLC。");
+        var scanning = scannerSettings ?? new ScannerTriggerSettings();
+        scanning.Validate();
         var monitoring = new MonitorReadPlan(configuration, monitorPoints ?? new Dictionary<MonitorPointId, MonitorPoint>(), barcodePoint);
         var recipes = new Dictionary<RecipePointId, ushort>(recipePoints ?? new Dictionary<RecipePointId, ushort>());
         var writePlan = new RecipeWritePlan(configuration, recipes, monitoring);
@@ -149,8 +157,10 @@ public sealed class ModbusStation : IStation
         recipePlan = writePlan;
         inspectionOverrides = inspection;
         this.recordTrigger = recordTrigger;
+        scannerTrigger = scanning;
         manualPoints = manual;
         feedbackAddresses = FeedbackAddresses(manualPoints);
+        ValidateScannerSettings(scannerTrigger);
     }
 
     internal void CloseConnection() => Disconnect();
@@ -364,6 +374,108 @@ public sealed class ModbusStation : IStation
     internal Task<bool> ReadCoilAsync(ushort address, CancellationToken cancellationToken) =>
         ExchangeAsync(connection => connection.ReadCoils(settings.UnitId, address, 1)[0], cancellationToken);
 
+    internal ScannerResult? PendingScannerResult => pendingScannerResult;
+
+    internal async Task UpdateScannerSettingsAsync(ScannerTriggerSettings updated, Action save)
+    {
+        updated.Validate();
+        await scannerTransaction.WaitAsync();
+        try
+        {
+            if (pendingScannerResult is not null)
+                throw new InvalidOperationException("扫码结果尚未确认写回，不能修改扫码地址。");
+            ValidateScannerSettings(updated);
+            save();
+            scannerTrigger = updated;
+        }
+        finally { scannerTransaction.Release(); }
+    }
+
+    internal async Task<ScannerResult?> ProcessScannerTriggerAsync(
+        Func<CancellationToken, Task<ScannerResult>> scan, CancellationToken cancellationToken)
+    {
+        await scannerTransaction.WaitAsync(cancellationToken);
+        try
+        {
+            var points = scannerTrigger;
+            if (points.TriggerAddress is not ushort trigger)
+                return null;
+            ValidateScannerSettings(points);
+            bool requested = await ReadCoilAsync(trigger, cancellationToken);
+            if (!requested)
+            {
+                var previous = pendingScannerResult;
+                pendingScannerResult = null;
+                if (previous is not null && !scannerAcknowledging)
+                    throw new InvalidOperationException("扫码结果未写完，但 PLC 已提前清除扫码触发；本次结果已取消。");
+                scannerAcknowledging = false;
+                return previous;
+            }
+
+            // Keep the result across write failures, including an unconfirmed trigger acknowledgement.
+            ScannerResult result = pendingScannerResult ??= await scan(cancellationToken);
+            await ExchangeAsync(connection =>
+            {
+                connection.WriteMultipleRegisters(settings.UnitId, points.BarcodeAddress, result.Words);
+                connection.WriteSingleRegister(settings.UnitId, points.VerdictAddress, result.VerdictCode);
+                scannerAcknowledging = true;
+                connection.WriteSingleCoil(settings.UnitId, trigger, false);
+                return true;
+            }, cancellationToken);
+            pendingScannerResult = null;
+            scannerAcknowledging = false;
+            return result;
+        }
+        finally { scannerTransaction.Release(); }
+    }
+
+    private void ValidateScannerSettings(ScannerTriggerSettings points)
+    {
+        points.Validate();
+        if (points.TriggerAddress is not ushort trigger)
+        {
+            ValidateScannerRegisterRanges(points);
+            return;
+        }
+
+        var commands = StationActions.Devices.Where(item => StationActions.IsInspectionSwitch(item.Key))
+            .Select(item => InspectionPoints.Resolve(settings, inspectionOverrides, item.Key).WriteAddress)
+            .Append(InspectionPoints.Resolve(settings, inspectionOverrides, "reset").WriteAddress)
+            .Concat(manualPoints.Values.Select(point => (ushort?)point.WriteAddress))
+            .Append(recordTrigger);
+        if (commands.Contains(trigger))
+            throw new InvalidOperationException("扫码触发线圈与其他写入命令地址冲突。");
+        ValidateScannerRegisterRanges(points);
+    }
+
+    private void ValidateScannerRegisterRanges(ScannerTriggerSettings points)
+    {
+        int barcodeStart = points.BarcodeAddress;
+        int barcodeEnd = barcodeStart + ScannerTriggerSettings.BarcodeWords;
+        int verdictStart = points.VerdictAddress;
+        int verdictEnd = verdictStart + 1;
+        if (readPlan.OverlapsHoldingRegisters(barcodeStart, barcodeEnd)
+            || readPlan.OverlapsHoldingRegisters(verdictStart, verdictEnd))
+            throw new InvalidOperationException("扫码结果寄存器不能与 PLC 监控读取区重叠。");
+
+        bool Overlaps(int start, int end, int otherStart, int otherEnd) =>
+            start < otherEnd && otherStart < end;
+        if (settings.RecipeAddress is ushort recipeStart
+            && (Overlaps(barcodeStart, barcodeEnd, recipeStart, recipeStart + PlcLayout.RecipeWords)
+                || Overlaps(verdictStart, verdictEnd, recipeStart, recipeStart + PlcLayout.RecipeWords)))
+            throw new InvalidOperationException("扫码结果寄存器不能与 PLC 配方写入区重叠。");
+
+        foreach (var (id, point) in RecipePoint.All)
+        {
+            if (!recipeOverrides.TryGetValue(id, out ushort address)
+                || address == point.DefaultAddress(settings))
+                continue;
+            if (Overlaps(barcodeStart, barcodeEnd, address, address + point.WordCount)
+                || Overlaps(verdictStart, verdictEnd, address, address + point.WordCount))
+                throw new InvalidOperationException($"扫码结果寄存器不能与“{point.Label}”写入地址重叠。");
+        }
+    }
+
     internal Task<bool?> ProcessRecordTriggerAsync(Func<TestSnapshot, bool> archive, CancellationToken cancellationToken) =>
         ExchangeAsync<bool?>(connection =>
         {
@@ -521,6 +633,7 @@ public sealed class ModbusStation : IStation
     {
         Disconnect();
         bus.Dispose();
+        scannerTransaction.Dispose();
     }
 }
 
@@ -619,7 +732,7 @@ public static class PlcLayout
         return Utf8.GetString(bytes, 0, end < 0 ? bytes.Length : end);
     }
 
-    private static void WriteString(ushort[] words, int offset, int length, string value, string label)
+    internal static void WriteString(ushort[] words, int offset, int length, string value, string label)
     {
         byte[] bytes = Utf8.GetBytes(value);
         if (bytes.Length > length * 2 || value.Contains('\0'))

@@ -22,6 +22,9 @@ public sealed class StationView : Bindable
     private string manualError = "";
     private string runtimeLabel = "0:00:00";
     private string runtimeStatus = "未配置运行地址";
+    private string? scannerBarcode;
+    private string? scannerModel;
+    private string scannerComparisonLabel = "等待 PLC 扫码触发";
 
     public StationView()
     {
@@ -69,8 +72,11 @@ public sealed class StationView : Bindable
         TestStage.Fault => "PLC 故障",
         _ => "待机 · 等待测试"
     };
-    public string BarcodeLabel => string.IsNullOrEmpty(snapshot.Barcode) ? "—" : snapshot.Barcode;
-    public string ModelLabel => string.IsNullOrEmpty(snapshot.Model) ? IsSimulation ? activeRecipe.Model : "—" : snapshot.Model;
+    public string BarcodeLabel => !string.IsNullOrEmpty(scannerBarcode) ? scannerBarcode
+        : string.IsNullOrEmpty(snapshot.Barcode) ? "—" : snapshot.Barcode;
+    public string ModelLabel => !string.IsNullOrEmpty(scannerModel) ? scannerModel
+        : string.IsNullOrEmpty(snapshot.Model) ? IsSimulation ? activeRecipe.Model : "—" : snapshot.Model;
+    public string ScannerComparisonLabel => scannerComparisonLabel;
     public bool CanSwitchMode => !busy && !sendingRecipe && !snapshot.Running;
     public bool CanReadPlcTest => station is ModbusStation && !busy;
     public bool CanWritePlcTest => station is ModbusStation &&
@@ -106,11 +112,30 @@ public sealed class StationView : Bindable
     public string RuntimeLabel { get => runtimeLabel; private set => Set(ref runtimeLabel, value); }
     public string RuntimeStatus { get => runtimeStatus; private set => Set(ref runtimeStatus, value); }
     public bool CanEditSystemSettings => !busy && IsAdministrator;
+    public bool CanCapture => !busy && !snapshot.Running && (IsSimulation || IsAdministrator);
 
     public void UpdateRuntime(TimeSpan total, string status)
     {
         RuntimeLabel = RuntimeCounter.Format(total);
         RuntimeStatus = status;
+    }
+
+    internal void UpdateScannerResult(ScannerResult result)
+    {
+        scannerBarcode = result.Barcode;
+        scannerModel = result.Model;
+        scannerComparisonLabel = result.Comparison;
+        Changed(nameof(BarcodeLabel));
+        Changed(nameof(ModelLabel));
+        Changed(nameof(ScannerComparisonLabel));
+    }
+
+    public void UpdateScannerStatus(string status)
+    {
+        if (scannerComparisonLabel == status)
+            return;
+        scannerComparisonLabel = status;
+        Changed(nameof(ScannerComparisonLabel));
     }
 
     public void SetSendingRecipe(bool value)

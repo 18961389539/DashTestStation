@@ -172,7 +172,7 @@
                         </DockPanel>
                     </Border>
 
-                    <UniformGrid Grid.Row="1" Columns="4" Margin="0,0,0,13">
+                    <UniformGrid Grid.Row="1" Columns="5" Margin="0,0,0,13">
                         <Border Style="{StaticResource Panel}" Padding="15,11" Margin="0,0,8,0">
                             <StackPanel>
                                 <TextBlock Text="扫码信息" Style="{StaticResource MutedText}"/>
@@ -204,6 +204,14 @@
                                 <TextBlock Text="{Binding RuntimeLabel}" FontFamily="Consolas" FontSize="23" FontWeight="SemiBold" Margin="0,4,0,0"/>
                                 <TextBlock Text="{Binding RuntimeStatus}" Style="{StaticResource MutedText}" FontSize="11"
                                            TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Panel}" Padding="15,11" Margin="8,0,0,0">
+                            <StackPanel>
+                                <TextBlock Text="扫码比对" Style="{StaticResource MutedText}"/>
+                                <TextBlock Text="{Binding ScannerComparisonLabel}" TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding ScannerComparisonLabel}" FontSize="18"
+                                           FontWeight="SemiBold" Margin="0,5,0,0"/>
                             </StackPanel>
                         </Border>
                     </UniformGrid>
@@ -353,7 +361,12 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
                 <TextBlock Text="{Binding ManualHint}" Style="{StaticResource MutedText}"
-                           ToolTip="{Binding ManualError}" HorizontalAlignment="Right"/>
+                           ToolTip="{Binding ManualError}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                    <Button Content="相机拍照" Click="CameraCapture_Click" IsEnabled="{Binding CanCapture}" Style="{StaticResource Primary}"
+                            ToolTip="通过设备管理页的相机 TCP 发送 start，相机返回 OK 表示拍照成功，返回 fail 表示失败。"/>
+                    <TextBlock x:Name="CameraCaptureResult" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                </StackPanel>
                 <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                     <UniformGrid Columns="2" Width="530" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,12">
                         <ItemsControl ItemsSource="{Binding FixtureActions}" ItemTemplate="{StaticResource ManualActionCard}" Margin="0,0,16,0"/>
@@ -875,6 +888,26 @@
                                 <Button Content="保存设置" Click="SaveRuntimeSettings_Click" IsEnabled="{Binding CanEditSystemSettings}"
                                         Style="{StaticResource Primary}"/>
                             </StackPanel>
+                            <Separator Margin="0,20,0,16"/>
+                            <TextBlock Text="扫码触发与写回" Style="{StaticResource Section}" Margin="0,0,0,12"/>
+                            <Label Content="扫码触发线圈地址" Target="{Binding ElementName=ScannerTriggerAddress}"
+                                   Foreground="{StaticResource Text}" FontWeight="SemiBold" Padding="0,0,0,5"/>
+                            <TextBox x:Name="ScannerTriggerAddress" MaxLength="12" IsEnabled="{Binding CanEditSystemSettings}"
+                                     AutomationProperties.Name="扫码触发线圈地址"/>
+                            <Label Content="二维码存储寄存器（32 字）" Target="{Binding ElementName=ScannerBarcodeAddress}"
+                                   Foreground="{StaticResource Text}" FontWeight="SemiBold" Padding="0" Margin="0,10,0,5"/>
+                            <TextBox x:Name="ScannerBarcodeAddress" MaxLength="8" IsEnabled="{Binding CanEditSystemSettings}"
+                                     AutomationProperties.Name="二维码存储寄存器地址"/>
+                            <Label Content="比对结果寄存器" Target="{Binding ElementName=ScannerVerdictAddress}"
+                                   Foreground="{StaticResource Text}" FontWeight="SemiBold" Padding="0" Margin="0,10,0,5"/>
+                            <TextBox x:Name="ScannerVerdictAddress" MaxLength="8" IsEnabled="{Binding CanEditSystemSettings}"
+                                     AutomationProperties.Name="扫码比对结果寄存器地址"/>
+                            <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,8,0,0"
+                                       Text="Y11 为默认触发地址；留空可停用扫码触发。读到触发后启动扫码，按当前配方的开始序号和对比长度与产品型号比较（区分大小写；长度为 0 时采用产品型号长度）。二维码以 UTF-8 写入 32 个连续保持寄存器（高字节在前）；比对结果写入地址对应 1=匹配、2=不匹配。两项写入成功后将触发线圈清零；失败会保留扫码结果并重试。"/>
+                            <TextBlock x:Name="ScannerSettingsError" Foreground="{StaticResource Red}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            <Button Content="保存扫码设置" Click="SaveScannerSettings_Click"
+                                    IsEnabled="{Binding CanEditSystemSettings}" Style="{StaticResource Primary}"
+                                    HorizontalAlignment="Right" Margin="0,12,0,0"/>
                             <TextBlock Text="请登录管理员账号修改系统设置。" Margin="0,10,0,0">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">

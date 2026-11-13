@@ -56,6 +56,19 @@ public sealed class StationStore
     public Dictionary<MonitorPointId, MonitorPoint> LoadMonitorPoints() => LoadPoints<MonitorPointId, MonitorPoint>("monitor_points");
     internal BarcodePoint? LoadBarcodePoint() => LoadSetting<BarcodePoint>("barcode_point");
     internal ushort? LoadRecordTrigger() => LoadSetting<RecordTriggerPoint>("record_trigger")?.Address;
+    internal ScannerTriggerSettings LoadScannerTrigger()
+    {
+        var settings = LoadSetting<ScannerTriggerSettings>("scanner_trigger") ?? new();
+        settings.Validate();
+        return settings;
+    }
+
+    internal void SaveScannerTrigger(ScannerTriggerSettings settings)
+    {
+        settings.Validate();
+        SaveSetting("scanner_trigger", settings);
+    }
+
     public Dictionary<ManualPointId, ManualPoint> LoadManualPoints() => LoadPoints<ManualPointId, ManualPoint>("manual_points");
     public Dictionary<RecipePointId, ushort> LoadRecipePoints() => LoadPoints<RecipePointId, ushort>("recipe_points");
     public Dictionary<string, InspectionPoint> LoadInspectionPoints() => LoadPoints<string, InspectionPoint>("inspection_points");

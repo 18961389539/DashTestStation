@@ -2,6 +2,7 @@ using System.IO;
 using System.IO.Ports;
 using System.Net.Sockets;
 using System.Text;
+using Newland.Fm430;
 
 namespace DustLoadScada;
 
@@ -299,7 +300,7 @@ internal sealed class CameraConnection
 internal sealed class ScannerConnection
 {
     private readonly SemaphoreSlim gate = new(1, 1);
-    private SerialPort? port;
+    private Fm430Scanner? scanner;
     private CancellationTokenSource? cancellation;
     private Task receiving = Task.CompletedTask;
     private volatile DeviceStatus status = new("未连接");
@@ -314,14 +315,27 @@ internal sealed class ScannerConnection
             status = new("连接中", settings.Port);
             try
             {
-                var openedPort = await Task.Run(() => OpenPort(settings)).ConfigureAwait(false);
-                port = openedPort;
+                var client = new Fm430Scanner(new Fm430SerialOptions(settings.Port, settings.BaudRate,
+                    settings.DataBits, settings.Parity, settings.StopBits, settings.Handshake));
+                bool owned = false;
+                try
+                {
+                    await client.ConnectAsync().ConfigureAwait(false);
+                    scanner = client;
+                    owned = true;
+                }
+                finally
+                {
+                    if (!owned)
+                        await client.DisposeAsync().ConfigureAwait(false);
+                }
                 cancellation = new CancellationTokenSource();
                 var token = cancellation.Token;
                 status = new("已连接", $"{settings.Port} · {settings.BaudRate} bps");
-                receiving = Task.Run(() => Receive(openedPort, token));
+                receiving = ReceiveAsync(client, token);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException
+                or UnauthorizedAccessException or NotSupportedException or System.Security.SecurityException)
             {
                 status = new("连接失败", ex.Message);
                 throw;
@@ -345,54 +359,84 @@ internal sealed class ScannerConnection
         await gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (port is not { IsOpen: true } activePort || status.State != "已连接")
+            if (scanner is not { IsConnected: true } activeScanner || status.State != "已连接")
                 throw new InvalidOperationException("请先连接扫码枪。");
 
-            await Task.Run(() => activePort.Write(command, 0, command.Length)).ConfigureAwait(false);
+            await activeScanner.SendAsync(command).ConfigureAwait(false);
         }
         finally { gate.Release(); }
     }
 
-    private async Task CloseAsync()
+    internal async Task<string> ScanAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (scanner is not { IsConnected: true } activeScanner || status.State != "已连接")
+                throw new InvalidOperationException("请先连接扫码枪。");
+
+            await StopReceivingAsync().ConfigureAwait(false);
+            try
+            {
+                string barcode = await activeScanner.ScanAsync(timeout, cancellationToken).ConfigureAwait(false);
+                status = status with { LastReceived = barcode };
+                return barcode;
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException
+                or AggregateException)
+            {
+                if (!activeScanner.IsConnected)
+                    status = status with { State = "连接异常", Detail = ex.Message };
+                throw;
+            }
+            finally
+            {
+                if (activeScanner.IsConnected)
+                    StartReceiving(activeScanner);
+            }
+        }
+        finally { gate.Release(); }
+    }
+
+    private void StartReceiving(Fm430Scanner client)
+    {
+        cancellation = new CancellationTokenSource();
+        receiving = ReceiveAsync(client, cancellation.Token);
+    }
+
+    private async Task StopReceivingAsync()
     {
         cancellation?.Cancel();
-        await receiving.ConfigureAwait(false);
-        cancellation?.Dispose();
-        cancellation = null;
-        port = null;
+        try { await receiving.ConfigureAwait(false); }
+        finally
+        {
+            cancellation?.Dispose();
+            cancellation = null;
+        }
+    }
+
+    private async Task CloseAsync()
+    {
+        await StopReceivingAsync().ConfigureAwait(false);
+        if (scanner is not null)
+            await scanner.DisposeAsync().ConfigureAwait(false);
+        scanner = null;
         status = new("未连接");
     }
 
-    private static SerialPort OpenPort(ScannerSettings settings)
-    {
-        var port = new SerialPort(settings.Port, settings.BaudRate, settings.Parity, settings.DataBits, settings.StopBits)
-        {
-            ReadTimeout = 250,
-            WriteTimeout = 3000,
-            Handshake = settings.Handshake
-        };
-        try { port.Open(); return port; }
-        catch { port.Dispose(); throw; }
-    }
-
-    private void Receive(SerialPort port, CancellationToken token)
+    private async Task ReceiveAsync(Fm430Scanner client, CancellationToken token)
     {
         try
         {
-            using (port)
+            while (!token.IsCancellationRequested)
             {
-                var frame = new ScannerFrames();
-                var buffer = new byte[256];
-                while (!token.IsCancellationRequested)
-                {
-                    int length;
-                    try { length = port.Read(buffer, 0, buffer.Length); }
-                    catch (TimeoutException) { continue; }
-                    frame.Append(buffer.AsSpan(0, length), barcode => status = status with { LastReceived = barcode });
-                }
+                string barcode = await client.ReadBarcodeAsync(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+                status = status with { LastReceived = barcode };
             }
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or InvalidOperationException
+            or UnauthorizedAccessException or AggregateException)
         {
             if (!token.IsCancellationRequested)
                 status = status with { State = "连接异常", Detail = ex.Message };
@@ -422,30 +466,6 @@ internal static class ScannerCommand
         catch (FormatException ex)
         {
             throw new FormatException("HEX 指令仅支持 0–9、A–F 和空白分隔符，例如 02 41 03。", ex);
-        }
-    }
-}
-
-internal sealed class ScannerFrames
-{
-    private readonly List<byte> buffer = [];
-    private bool overflow;
-
-    internal void Append(ReadOnlySpan<byte> bytes, Action<string> receive)
-    {
-        foreach (byte value in bytes)
-        {
-            if (value is 10 or 13)
-            {
-                if (!overflow && buffer.Count > 0)
-                    receive(Encoding.UTF8.GetString(buffer.ToArray()));
-                buffer.Clear();
-                overflow = false;
-            }
-            else if (buffer.Count < 4096)
-                buffer.Add(value);
-            else
-                overflow = true;
         }
     }
 }

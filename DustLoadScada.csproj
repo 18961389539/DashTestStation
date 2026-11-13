@@ -8,6 +8,9 @@
     <AssemblyName>DustLoadScada</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Newland.Fm430.Tests" />
+    <Compile Remove="Libraries\**\*.cs;Tests\**\*.cs" />
+    <ProjectReference Include="Libraries\Newland.Fm430\Newland.Fm430.csproj" />
     <PackageReference Include="NModbus" Version="3.0.83" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="System.IO.Ports" Version="10.0.7" />
