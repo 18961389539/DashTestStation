@@ -1,13 +1,13 @@
 {
-  "Host": "192.168.1.10",
+  "Host": "192.168.6.6",
   "Port": 502,
   "UnitId": 1,
   "StationId": "台架-01",
   "PollMilliseconds": 300,
-  "TimeoutMilliseconds": 1200,
+  "TimeoutMilliseconds": 1500,
   "TelemetryAddress": 0,
   "UseInputRegisters": false,
-  "LowWordFirst": false,
+  "LowWordFirst": true,
   "RecipeAddress": null,
   "Commands": {}
 }

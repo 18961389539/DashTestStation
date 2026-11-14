@@ -16,6 +16,7 @@ internal static class PlcAddress
 
     public const ushort XBase = 0x5000;
     public const ushort YBase = 0x6000;
+    public const ushort HMBase = 0xC100;
 
     private static readonly Area[] Coils =
     [
@@ -29,13 +30,14 @@ internal static class PlcAddress
         new("Y", 0x68D0, 0x2000, 128, true),
         new("Y", 0x6BF0, 0x3000, 64, true),
         new("S", 0x7000, 0, 1024, false),
-        new("HM", 0xC100, 0, 960, false)
+        new("HM", HMBase, 0, 960, false)
     ];
 
     private static readonly Area[] Registers =
     [
         new("D", 0x0000, 0, 8000, false),
-        new("HD", 0xA080, 0, 1000, false)
+        new("HD", 0xA080, 0, 1000, false),
+        new("HM", HMBase, 0, 960, false)
     ];
 
     public static bool TryParseCoil(string text, out ushort address) => TryParse(text, Coils, out address);

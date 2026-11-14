@@ -121,6 +121,8 @@ public sealed record TestSnapshot
     public Verdict DirectionVerdict { get; init; }
     public Verdict BrushLightVerdict { get; init; }
     public Verdict? BrushLightOffVerdict { get; init; }
+    public Verdict? IndicatorOffCameraVerdict { get; init; }
+    public Verdict? HeadlightIndicatorCameraVerdict { get; init; }
     public Verdict? NormalCurrentVerdict { get; init; }
     public Verdict? NormalPowerVerdict { get; init; }
     public Verdict? NormalSpeedVerdict { get; init; }
@@ -158,6 +160,8 @@ public sealed record TestSnapshot
         Code(DirectionVerdict);
         Code(BrushLightVerdict);
         Code(BrushLightOffVerdict);
+        Code(IndicatorOffCameraVerdict);
+        Code(HeadlightIndicatorCameraVerdict);
         Code(NormalCurrentVerdict);
         Code(NormalPowerVerdict);
         Code(NormalSpeedVerdict);
@@ -194,12 +198,14 @@ public sealed class ManualAction(ManualPointId id) : Bindable
 {
     private ManualPoint point = ManualPoints.Default(id);
     private bool? feedback;
+    private bool available;
     private string result = "";
     private string resultState = "";
     public ManualPointId Id { get; } = id;
     public string Label => ManualPoints.Labels[(int)Id];
     public string Addresses => $"{PlcAddress.FormatCoil(point.WriteAddress)} → {PlcAddress.FormatCoil(point.FeedbackAddress)}";
     public bool? Feedback { get => feedback; set { if (Set(ref feedback, value)) Changed(nameof(State)); } }
+    public bool Available { get => available; set => Set(ref available, value); }
     public string State => Feedback switch { true => "输出 ON", false => "输出 OFF", _ => "反馈未知" };
     public ManualPoint Point { get => point; set { if (Set(ref point, value)) Changed(nameof(Addresses)); } }
     public string Result { get => result; private set => Set(ref result, value); }

@@ -24,9 +24,10 @@
             <Setter Property="ToolTip" Value="{Binding RelativeSource={RelativeSource Self}, Path=(AutomationProperties.Name)}"/>
             <Setter Property="ToolTipService.ShowOnDisabled" Value="True"/>
             <Setter Property="IsEnabled" Value="{Binding CanEditMonitorPoints}"/>
+            <Setter Property="Visibility" Value="{Binding DataContext.IsAdministrator, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource VisibleWhen}}"/>
             <Style.Triggers>
                 <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="ToolTip" Value="请登录管理员，并在待机时编辑。"/>
+                    <Setter Property="ToolTip" Value="仅管理员可编辑地址，请先登录。"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -41,6 +42,69 @@
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="MinHeight" Value="51"/>
             <Setter Property="Padding" Value="8,6"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Feedback}" Value="True">
+                    <Setter Property="Background" Value="{StaticResource Green}"/>
+                    <Setter Property="BorderBrush" Value="{StaticResource Green}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="ResetCommand" TargetType="Button" BasedOn="{StaticResource Primary}">
+            <Setter Property="MinHeight" Value="46"/>
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="ToolTip" Value="点动复位：按下写入 1，松开写入 0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Frame" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6" Padding="{TemplateBinding Padding}"
+                                RenderTransformOrigin="0.5,0.5">
+                            <Grid>
+                                <ContentPresenter x:Name="IdleLabel" HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                                <StackPanel x:Name="HeldLabel" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                            Visibility="Collapsed">
+                                    <Ellipse x:Name="HeldDot" Width="9" Height="9" Fill="{StaticResource GreenDeep}"
+                                             VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBlock Text="已按下 · 复位中" FontWeight="Bold" Foreground="{StaticResource Ink}"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Tag" Value="held">
+                                <Setter TargetName="Frame" Property="Background" Value="{StaticResource Green}"/>
+                                <Setter TargetName="Frame" Property="BorderBrush" Value="{StaticResource GreenDeep}"/>
+                                <Setter TargetName="Frame" Property="BorderThickness" Value="2"/>
+                                <Setter TargetName="Frame" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <TranslateTransform Y="1.5"/>
+                                    </Setter.Value>
+                                </Setter>
+                                <Setter TargetName="Frame" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#7DDEB7" BlurRadius="22" ShadowDepth="0" Opacity="0.9"/>
+                                    </Setter.Value>
+                                </Setter>
+                                <Setter TargetName="IdleLabel" Property="Visibility" Value="Collapsed"/>
+                                <Setter TargetName="HeldLabel" Property="Visibility" Value="Visible"/>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard Name="HeldPulse">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="HeldDot" Storyboard.TargetProperty="Opacity"
+                                                             From="1" To="0.25" Duration="0:0:0.55" AutoReverse="True" RepeatBehavior="Forever"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <StopStoryboard BeginStoryboardName="HeldPulse"/>
+                                </Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Frame" Property="Opacity" Value=".40"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <DataTemplate x:Key="InspectionSwitchCard">
             <DockPanel Margin="0,0,0,7">
@@ -101,28 +165,43 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <Ellipse Grid.Row="0" Width="8" Height="8" VerticalAlignment="Center" Margin="0,0,7,0"
-                         ToolTip="{Binding State}" AutomationProperties.Name="{Binding State}">
-                    <Ellipse.Style>
-                        <Style TargetType="Ellipse">
-                            <Setter Property="Fill" Value="{StaticResource Muted}"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding Feedback}" Value="True">
-                                    <Setter Property="Fill" Value="{StaticResource Green}"/>
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Feedback}" Value="False">
-                                    <Setter Property="Fill" Value="{StaticResource Line}"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </Ellipse.Style>
-                </Ellipse>
+                <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,7,0">
+                    <Ellipse Width="8" Height="8" VerticalAlignment="Center"
+                             ToolTip="{Binding State}" AutomationProperties.Name="{Binding State}">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="{StaticResource Muted}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Feedback}" Value="True">
+                                        <Setter Property="Fill" Value="{StaticResource Green}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Feedback}" Value="False">
+                                        <Setter Property="Fill" Value="{StaticResource Line}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Text="{Binding State}" FontSize="11" Margin="5,0,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Feedback}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource Green}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
                 <Button Grid.Row="0" Grid.Column="1" Style="{StaticResource ManualCommand}"
                         Content="{Binding Label}" ToolTip="{Binding Addresses}"
                         ToolTipService.ShowOnDisabled="True" AutomationProperties.HelpText="{Binding State}"
                         CommandParameter="{Binding Id}" AutomationProperties.Name="{Binding Label}"
-                        IsEnabled="{Binding DataContext.CanUseManual, RelativeSource={RelativeSource AncestorType=Window}}"
+                        IsEnabled="{Binding Available}"
                         PreviewMouseLeftButtonDown="Manual_MouseDown" PreviewMouseLeftButtonUp="Manual_MouseUp"
+                        PreviewMouseMove="Manual_MouseMove" Click="ManualAction_Click"
                         LostMouseCapture="Manual_LostMouseCapture" PreviewKeyDown="Manual_KeyDown"
                         PreviewKeyUp="Manual_KeyUp" LostKeyboardFocus="Manual_LostKeyboardFocus"
                         Stylus.IsPressAndHoldEnabled="False"/>
@@ -214,8 +293,15 @@
                         </Border>
                         <Border Style="{StaticResource Panel}" Padding="15,11" Margin="4,0">
                             <StackPanel>
-                                <TextBlock Text="产品型号" Style="{StaticResource MutedText}"/>
-                                <TextBlock Text="{Binding ModelLabel}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelLabel}"
+                                <DockPanel>
+                                    <Border DockPanel.Dock="Right" BorderBrush="{StaticResource Red}" BorderThickness="1" CornerRadius="4"
+                                            Padding="5,0" VerticalAlignment="Center" ToolTip="扫码解析的型号与当前配方不一致"
+                                            Visibility="{Binding ModelMismatch, Converter={StaticResource VisibleWhen}}">
+                                        <TextBlock Text="不匹配" Foreground="{StaticResource Red}" FontSize="11"/>
+                                    </Border>
+                                    <TextBlock Text="产品型号" Style="{StaticResource MutedText}"/>
+                                </DockPanel>
+                                <TextBlock Text="{Binding ModelLabel}" Foreground="{Binding ModelColor}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelLabel}"
                                            FontSize="20" FontWeight="SemiBold" Margin="0,5,0,0"/>
                             </StackPanel>
                         </Border>
@@ -256,6 +342,30 @@
                         <Border Style="{StaticResource Panel}" Margin="0,0,12,0" Padding="16,12">
                             <StackPanel>
                                 <TextBlock Text="测试读数" Style="{StaticResource Section}" Margin="0,0,0,6"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,3">
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,24,0"
+                                                Visibility="{Binding ShowIndicatorOffCameraVerdict, Converter={StaticResource VisibleWhen}}">
+                                        <TextBlock Text="跑马灯灭相机判定" Style="{StaticResource MutedText}" Margin="0,0,12,0"/>
+                                        <Grid MinWidth="82" Height="49">
+                                            <TextBlock Margin="0,17,0,0" HorizontalAlignment="Center"
+                                                       Text="{Binding Snapshot.IndicatorOffCameraVerdict, Converter={StaticResource Verdict}}"
+                                                       Foreground="{Binding Snapshot.IndicatorOffCameraVerdict, Converter={StaticResource Verdict}}"/>
+                                            <Button Style="{StaticResource PointEdit}" CommandParameter="{x:Static local:MonitorPointId.IndicatorOffCameraVerdict}"
+                                                    AutomationProperties.Name="编辑跑马灯灭相机判定"/>
+                                        </Grid>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal"
+                                                Visibility="{Binding ShowHeadlightIndicatorCameraVerdict, Converter={StaticResource VisibleWhen}}">
+                                        <TextBlock Text="头灯跑马灯相机判定" Style="{StaticResource MutedText}" Margin="0,0,12,0"/>
+                                        <Grid MinWidth="82" Height="49">
+                                            <TextBlock Margin="0,17,0,0" HorizontalAlignment="Center"
+                                                       Text="{Binding Snapshot.HeadlightIndicatorCameraVerdict, Converter={StaticResource Verdict}}"
+                                                       Foreground="{Binding Snapshot.HeadlightIndicatorCameraVerdict, Converter={StaticResource Verdict}}"/>
+                                            <Button Style="{StaticResource PointEdit}" CommandParameter="{x:Static local:MonitorPointId.HeadlightIndicatorCameraVerdict}"
+                                                    AutomationProperties.Name="编辑头灯跑马灯相机判定"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </StackPanel>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="1.55*"/>
@@ -305,19 +415,19 @@
                                     <TextBlock Grid.Row="2" Grid.Column="0" Text="测试转速 (r/min)"/>
                                     <Grid Grid.Row="2" Grid.Column="1">
                                         <TextBlock Margin="0,18,0,0" Style="{StaticResource Reading}"
-                                                   Text="{Binding Snapshot.NormalSpeed, StringFormat={}0, TargetNullValue=—}"/>
+                                                   Text="{Binding Snapshot.NormalSpeed, StringFormat={}0.00, TargetNullValue=—}"/>
                                         <Button Style="{StaticResource PointEdit}" CommandParameter="{x:Static local:MonitorPointId.NormalSpeed}"
                                                 AutomationProperties.Name="编辑正常转速"/>
                                     </Grid>
                                     <Grid Grid.Row="2" Grid.Column="2">
                                         <TextBlock Margin="0,18,0,0" Style="{StaticResource Reading}"
-                                                   Text="{Binding Snapshot.DustSpeed, StringFormat={}0, TargetNullValue=—}"/>
+                                                   Text="{Binding Snapshot.DustSpeed, StringFormat={}0.00, TargetNullValue=—}"/>
                                         <Button Style="{StaticResource PointEdit}" CommandParameter="{x:Static local:MonitorPointId.DustSpeed}"
                                                 AutomationProperties.Name="编辑灰尘转速"/>
                                     </Grid>
                                     <Grid Grid.Row="2" Grid.Column="3">
                                         <TextBlock Margin="0,18,0,0" Style="{StaticResource Reading}"
-                                                   Text="{Binding Snapshot.SpeedDelta, StringFormat={}0, TargetNullValue=—}"/>
+                                                   Text="{Binding Snapshot.SpeedDelta, StringFormat={}0.00, TargetNullValue=—}"/>
                                         <Button Style="{StaticResource PointEdit}" CommandParameter="{x:Static local:MonitorPointId.SpeedDelta}"
                                                 AutomationProperties.Name="编辑转速差值"/>
                                     </Grid>
@@ -359,7 +469,29 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-                                    <Button Click="Reset_Click" Content="复位" IsEnabled="{Binding CanReset}" Style="{StaticResource Primary}"/>
+                                    <StackPanel>
+                                        <Button x:Name="ResetButton" Content="复位" IsEnabled="{Binding CanReset}" Style="{StaticResource ResetCommand}"
+                                                AutomationProperties.HelpText="点动复位：按下写入 1，松开写入 0"
+                                                PreviewMouseLeftButtonDown="Reset_MouseDown" PreviewMouseLeftButtonUp="Reset_MouseUp"
+                                                LostMouseCapture="Reset_LostMouseCapture"
+                                                PreviewKeyDown="Reset_KeyDown" PreviewKeyUp="Reset_KeyUp"
+                                                LostKeyboardFocus="Reset_LostKeyboardFocus"
+                                                Stylus.IsPressAndHoldEnabled="False"/>
+                                        <TextBlock Margin="2,6,0,0" FontSize="11" TextWrapping="Wrap">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Text" Value="点动按钮 · 按下写 1，松开写 0"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Tag, ElementName=ResetButton}" Value="held">
+                                                            <Setter Property="Text" Value="已按下 · 松开后自动写 0"/>
+                                                            <Setter Property="Foreground" Value="{StaticResource Green}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
                                     <Button Grid.Column="1" Style="{StaticResource EditIcon}" Click="EditResetAddress_Click"
                                             Height="34" Margin="8,0,0,0" VerticalAlignment="Center" AutomationProperties.Name="编辑复位地址"/>
                                 </Grid>
@@ -394,11 +526,6 @@
                 </Grid.RowDefinitions>
                 <TextBlock Text="{Binding ManualHint}" Style="{StaticResource MutedText}"
                            ToolTip="{Binding ManualError}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
-                    <Button Content="相机拍照" Click="CameraCapture_Click" IsEnabled="{Binding CanCapture}" Style="{StaticResource Primary}"
-                            ToolTip="通过设备管理页的相机 TCP 发送 start，相机返回 OK 表示拍照成功，返回 fail 表示失败。"/>
-                    <TextBlock x:Name="CameraCaptureResult" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="12,0,0,0"/>
-                </StackPanel>
                 <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                     <UniformGrid Columns="2" Width="530" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,12">
                         <ItemsControl ItemsSource="{Binding FixtureActions}" ItemTemplate="{StaticResource ManualActionCard}" Margin="0,0,16,0"/>
@@ -1264,7 +1391,8 @@
                                             <DataTemplate>
                                                 <Button Content="编辑" Click="EditHistoryPoint_Click" Padding="12,3" MinHeight="32"
                                                         HorizontalAlignment="Center" AutomationProperties.Name="{Binding Label, StringFormat=编辑{0}}"
-                                                        IsEnabled="{Binding DataContext.CanEditMonitorPoints, RelativeSource={RelativeSource AncestorType=DataGrid}}"/>
+                                                        IsEnabled="{Binding DataContext.CanEditMonitorPoints, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                        Visibility="{Binding DataContext.IsAdministrator, RelativeSource={RelativeSource AncestorType=DataGrid}, Converter={StaticResource VisibleWhen}}"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
@@ -1316,7 +1444,7 @@
                 </Grid.RowDefinitions>
                 <StackPanel Margin="0,0,0,14">
                     <TextBlock Text="权限管理" Style="{StaticResource Title}"/>
-                    <TextBlock Text="未登录只能查看。管理员登录后才能修改配置、删除记录和操作实机。"
+                    <TextBlock Text="仅点位（地址）编辑需要管理员登录，其余功能无需登录即可使用。"
                                Style="{StaticResource MutedText}" Margin="0,4,0,0"/>
                 </StackPanel>
                 <Grid Grid.Row="1">
@@ -1356,9 +1484,9 @@
                                     </Border>
                                     <TextBlock Text="未登录" FontSize="20" FontWeight="SemiBold"/>
                                 </DockPanel>
-                                <TextBlock Text="可以查看状态监控、历史记录、设备状态和联系信息。" Style="{StaticResource Capability}"/>
-                                <TextBlock Text="模拟模式下可以手动操作和运行测试。" Style="{StaticResource Capability}"/>
-                                <TextBlock Text="不能修改点位、配方和系统设置，也不能删除记录或写入 PLC。" Style="{StaticResource Capability}"/>
+                                <TextBlock Text="可以查看状态监控、历史记录和设备状态，导出 CSV。" Style="{StaticResource Capability}"/>
+                                <TextBlock Text="可以操作手动、复位、检测开关、配方、系统设置，并删除记录。" Style="{StaticResource Capability}"/>
+                                <TextBlock Text="仅点位（地址）编辑需要管理员登录。" Style="{StaticResource Capability}"/>
                             </StackPanel>
                         </Border>
                         <Border>
@@ -1392,10 +1520,8 @@
                                     </Border>
                                     <TextBlock Text="管理员" FontSize="20" FontWeight="SemiBold"/>
                                 </DockPanel>
-                                <TextBlock Text="编辑监控点位、检测开关和配方。测试运行中这些项会锁定。" Style="{StaticResource Capability}"/>
-                                <TextBlock Text="修改系统设置，并清零累计运行时间。" Style="{StaticResource Capability}"/>
-                                <TextBlock Text="删除历史记录。" Style="{StaticResource Capability}"/>
-                                <TextBlock Text="在 PLC 上手动控制，并写入读写测试的值。" Style="{StaticResource Capability}"/>
+                                <TextBlock Text="编辑点位（地址）配置：监控读数、手动、检测开关、配方、二维码、触发与复位地址。" Style="{StaticResource Capability}"/>
+                                <TextBlock Text="其余功能与未登录相同，管理员不额外解锁操作。" Style="{StaticResource Capability}"/>
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -1438,7 +1564,7 @@
                                         Style="{StaticResource Primary}" Margin="0,16,0,0" HorizontalAlignment="Stretch"/>
                             </StackPanel>
                             <StackPanel Visibility="{Binding IsAdministrator, Converter={StaticResource VisibleWhen}}">
-                                <TextBlock Text="现在可以修改被锁定的配置，并操作实机。系统忙碌时不能退出。"
+                                <TextBlock Text="现在可以编辑点位（地址）配置。系统忙碌时不能退出。"
                                            Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
                                 <Button Content="退出登录" Click="Logout_Click" IsEnabled="{Binding CanLogout}" Margin="0,16,0,0"
                                         HorizontalAlignment="Left"/>
@@ -1484,23 +1610,6 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
                 <DockPanel Margin="0,0,0,12">
-                    <Border DockPanel.Dock="Right" Background="{StaticResource Input}" BorderBrush="{StaticResource Line}"
-                            BorderThickness="1" CornerRadius="12" Padding="10,4" VerticalAlignment="Center" Margin="16,0,0,0">
-                        <TextBlock FontSize="12" FontWeight="SemiBold">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Text" Value="只读"/>
-                                    <Setter Property="Foreground" Value="{StaticResource Muted}"/>
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsAdministrator}" Value="True">
-                                            <Setter Property="Text" Value="管理员"/>
-                                            <Setter Property="Foreground" Value="{StaticResource Accent}"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
-                    </Border>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="系统设置" Style="{StaticResource Title}"/>
                         <TextBlock Text="运行统计和扫码写回分开保存，配置放在本机数据目录。" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
@@ -1509,25 +1618,6 @@
                 <ScrollViewer x:Name="SystemSettingsScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
-                        <Border x:Name="SystemReadOnlyNotice" Background="{StaticResource Raised}"
-                                BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8"
-                                Padding="12,8" Margin="0,0,0,12">
-                            <Border.Style>
-                                <Style TargetType="Border">
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsAdministrator}" Value="True">
-                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Border.Style>
-                            <DockPanel>
-                                <Button DockPanel.Dock="Right" Content="前往权限管理" Click="Navigate_Click" CommandParameter="5"
-                                        IsEnabled="{Binding NotBusy}" Margin="16,0,0,0" Padding="12,4" MinHeight="32"/>
-                                <TextBlock Text="当前为只读。登录管理员后可修改地址、保存设置或清零累计时间。"
-                                           VerticalAlignment="Center" TextWrapping="Wrap"/>
-                            </DockPanel>
-                        </Border>
                         <Grid x:Name="SystemSettingsCards">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -1606,7 +1696,7 @@
                                         <StackPanel Grid.Row="1" Margin="0,0,14,10">
                                             <Label Content="二维码写回地址" Target="{Binding ElementName=ScannerBarcodeAddress}"
                                                    Style="{StaticResource SystemFieldLabel}"/>
-                                            <TextBlock Text="默认 D4000，连续 32 字 / 64 字节" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
+                                            <TextBlock Text="默认 D4000，连续 80 字 / 160 字节" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
                                         </StackPanel>
                                         <TextBox x:Name="ScannerBarcodeAddress" Grid.Row="1" Grid.Column="1" MaxLength="8"
                                                  Style="{StaticResource SystemField}" VerticalAlignment="Center" Margin="0,0,0,10"
@@ -1614,7 +1704,7 @@
                                         <StackPanel Grid.Row="2" Margin="0,0,14,0">
                                             <Label Content="比对结果写回地址" Target="{Binding ElementName=ScannerVerdictAddress}"
                                                    Style="{StaticResource SystemFieldLabel}"/>
-                                            <TextBlock Text="默认 D379，单个保持寄存器" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
+                                            <TextBlock Text="默认 D3，单个保持寄存器" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
                                         </StackPanel>
                                         <TextBox x:Name="ScannerVerdictAddress" Grid.Row="2" Grid.Column="1" MaxLength="8"
                                                  Style="{StaticResource SystemField}" VerticalAlignment="Center"
@@ -1640,7 +1730,7 @@
                                                        Style="{StaticResource SystemHint}"/>
                                             <TextBlock Text="从开始序号（从 1 开始）截取对比长度，与完整产品型号区分大小写比较。对比长度为 0 时使用产品型号的长度。"
                                                        Style="{StaticResource SystemHint}"/>
-                                            <TextBlock Text="二维码按 UTF-8 写入，每字高字节在前，不足补零。超过 64 字节会报错，不截断。扫码超时或通讯失败会提示并重试。"
+                                            <TextBlock Text="二维码按 UTF-8 写入，每字高字节在前；写入前先清空 80 个寄存器，再按实际长度动态写入，最多 160 字节，超长报错不截断。扫码超时或通讯失败会提示并重试。"
                                                        Style="{StaticResource SystemHint}"/>
                                         </StackPanel>
                                     </Expander>

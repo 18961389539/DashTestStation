@@ -266,6 +266,81 @@ public sealed class Fm430ScannerTests
         Assert.True(first.IsDisposed);
     }
 
+    [Fact]
+    public async Task CustomTriggerCommandsAreUsedForScanAndStop()
+    {
+        using var port = new FakeSerialTransport();
+        await using var scanner = Create(port);
+        scanner.StartCommand = [0x02, 0x54, 0x03];
+        scanner.StopCommand = [0x02, 0x50, 0x03];
+        await scanner.ConnectAsync();
+        port.OnWrite = _ => port.Enqueue("custom\r\n");
+
+        Assert.Equal("custom", await scanner.ScanAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(new byte[] { 0x02, 0x54, 0x03 }, Assert.Single(port.Writes));
+
+        port.OnWrite = null;
+        await scanner.StopScanningAsync();
+        Assert.Equal(new byte[] { 0x02, 0x50, 0x03 }, port.Writes[1]);
+    }
+
+    [Fact]
+    public async Task TriggerCommandValidationRejectsInvalidBytes()
+    {
+        using var port = new FakeSerialTransport();
+        await using var scanner = Create(port);
+        byte[][] invalid = [[], new byte[11], [0x3F, 0x54], [0x01, 0x00, 0x04]];
+        foreach (byte[] command in invalid)
+        {
+            Assert.Throws<ArgumentException>(() => scanner.StartCommand = command);
+            Assert.Throws<ArgumentException>(() => scanner.StopCommand = command);
+        }
+        Assert.Throws<ArgumentNullException>(() => scanner.StartCommand = null!);
+    }
+
+    [Fact]
+    public async Task TriggerCommandSetterCopiesCallerBytes()
+    {
+        using var port = new FakeSerialTransport();
+        await using var scanner = Create(port);
+        byte[] command = [0x02, 0x54, 0x03];
+        scanner.StartCommand = command;
+        command[1] = 0xFF;
+        await scanner.ConnectAsync();
+        await scanner.StartScanningAsync();
+
+        Assert.Equal(new byte[] { 0x02, 0x54, 0x03 }, Assert.Single(port.Writes));
+    }
+
+    [Fact]
+    public async Task SetupCommandsAreSentAsAscii()
+    {
+        using var port = new FakeSerialTransport();
+        await using var scanner = Create(port);
+        await scanner.ConnectAsync();
+        await scanner.SendSetupAsync("@ORTSET3000;");
+        await scanner.SetReadTimeoutAsync(2000);
+
+        Assert.Equal(Encoding.ASCII.GetBytes("@ORTSET3000;"), port.Writes[0]);
+        Assert.Equal(Encoding.ASCII.GetBytes("@ORTSET2000;"), port.Writes[1]);
+        await Assert.ThrowsAsync<ArgumentException>(() => scanner.SendSetupAsync("@ORTSET三千;"));
+        await Assert.ThrowsAsync<ArgumentException>(() => scanner.SendSetupAsync(" "));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => scanner.SetReadTimeoutAsync(0));
+    }
+
+    [Fact]
+    public async Task NoReadMessageIsReturnedAsAnOrdinaryFrame()
+    {
+        using var port = new FakeSerialTransport();
+        await using var scanner = Create(port);
+        await scanner.ConnectAsync();
+        port.Enqueue("NG\r\n");
+        Assert.Equal("NG", await scanner.ReadBarcodeAsync(TimeSpan.FromSeconds(1)));
+
+        port.OnWrite = bytes => { if (bytes[1] == 0x54) port.Enqueue("NG\r\n"); };
+        Assert.Equal("NG", await scanner.ScanAsync(TimeSpan.FromSeconds(1)));
+    }
+
     private static Fm430Scanner Create(FakeSerialTransport port) => new(new("COM-test"), _ => port);
 
     private sealed class FakeSerialTransport : ISerialTransport

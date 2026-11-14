@@ -299,6 +299,10 @@ internal sealed class CameraConnection
 
 internal sealed class ScannerConnection
 {
+    // 手册 NGR 读码未成功信息默认内容；仅用于设备管理页展示，测试流程仍统一按条码处理。
+    private const string NoReadMessage = "NG";
+    internal const string NoReadDisplay = "未读到条码（NG）";
+
     private readonly SemaphoreSlim gate = new(1, 1);
     private Fm430Scanner? scanner;
     private CancellationTokenSource? cancellation;
@@ -431,7 +435,7 @@ internal sealed class ScannerConnection
             while (!token.IsCancellationRequested)
             {
                 string barcode = await client.ReadBarcodeAsync(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
-                status = status with { LastReceived = barcode };
+                status = status with { LastReceived = barcode == NoReadMessage ? NoReadDisplay : barcode };
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }

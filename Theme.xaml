@@ -12,6 +12,7 @@
     <SolidColorBrush x:Key="AccentHover" Color="#FFDA81"/>
     <SolidColorBrush x:Key="Ink" Color="#232017"/>
     <SolidColorBrush x:Key="Green" Color="#7DDEB7"/>
+    <SolidColorBrush x:Key="GreenDeep" Color="#2F7D5C"/>
     <SolidColorBrush x:Key="Red" Color="#FF9E9E"/>
     <SolidColorBrush x:Key="Selected" Color="#3B372B"/>
     <local:VerdictConverter x:Key="Verdict"/>

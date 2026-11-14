@@ -23,7 +23,7 @@ public sealed class StationView : Bindable
     private string runtimeLabel = "0:00:00";
     private string runtimeStatus = "未配置运行地址";
     private string? scannerBarcode;
-    private string? scannerModel;
+    private bool scannerMismatch;
     private string scannerComparisonLabel = "等待 PLC 扫码触发";
 
     public StationView()
@@ -31,15 +31,19 @@ public sealed class StationView : Bindable
         InspectSwitches = StationActions.Devices.Select((item, bit) => (item, bit))
             .Where(entry => entry.item.Group == "检测开关")
             .Select(entry => new InspectionSwitch(entry.item.Key, entry.item.Label, entry.bit)).ToArray();
-        ManualActions = Enum.GetValues<ManualPointId>().Select(id => new ManualAction(id)).ToArray();
-        FixtureActions = ManualActions[..5];
-        LoadActions = ManualActions[5..10];
+        ManualActions = Enum.GetValues<ManualPointId>()
+            .Where(id => id != ManualPointId.CameraRecipe && id != ManualPointId.Mark)
+            .Select(id => new ManualAction(id)).ToArray();
+        FixtureActions = ManualActions[..6];
+        LoadActions = ManualActions[6..];
     }
 
     public ManualAction[] ManualActions { get; }
     public ManualAction[] FixtureActions { get; }
     public ManualAction[] LoadActions { get; }
     public InspectionSwitch[] InspectSwitches { get; }
+    public bool ShowIndicatorOffCameraVerdict => InspectSwitches.First(item => item.Key == "cameraOff").Feedback == true;
+    public bool ShowHeadlightIndicatorCameraVerdict => InspectSwitches.First(item => item.Key == "cameraOn").Feedback == true;
     public IStation Station => station;
     public TestSnapshot Snapshot => snapshot;
     public bool IsSimulation => station is SimulationStation;
@@ -75,36 +79,33 @@ public sealed class StationView : Bindable
     };
     public string BarcodeLabel => !string.IsNullOrEmpty(scannerBarcode) ? scannerBarcode
         : string.IsNullOrEmpty(snapshot.Barcode) ? "—" : snapshot.Barcode;
-    public string ModelLabel => !string.IsNullOrEmpty(scannerModel) ? scannerModel
-        : string.IsNullOrEmpty(snapshot.Model) ? IsSimulation ? activeRecipe.Model : "—" : snapshot.Model;
+    public string ModelLabel => activeRecipe.Model;
+    public bool ModelMismatch => scannerMismatch;
+    public Brush ModelColor => (Brush)App.Current.FindResource(scannerMismatch ? "Red" : "Text");
     public string ScannerComparisonLabel => scannerComparisonLabel;
     public bool CanSwitchMode => !busy && !sendingRecipe && !snapshot.Running;
     public bool CanReadPlcTest => station is ModbusStation && !busy;
     public bool CanWritePlcTest => station is ModbusStation &&
-        CanSwitchMode && online && snapshot.Stage != TestStage.Fault && IsAdministrator;
+        CanSwitchMode && online && snapshot.Stage != TestStage.Fault;
     public bool CanSimulate => IsSimulation && CanSwitchMode;
-    private bool CanOperate => !busy && online && !snapshot.Running && (IsSimulation || IsAdministrator);
-    public bool CanReset => CanOperate && station.Supports("reset");
-    public bool CanEditMonitorPoints => CanSwitchMode && IsAdministrator;
+    private bool CanOperate => !busy && online && !snapshot.Running;
+    public bool CanReset => !busy && online && station.Supports("reset");
+    public bool CanEditMonitorPoints => !busy && !sendingRecipe && IsAdministrator;
     public string MonitorPointEditHint => !IsAdministrator ? "仅管理员可编辑地址配置，请先登录管理员账号。"
         : busy ? "系统正在处理操作，暂时无法编辑地址。"
         : sendingRecipe ? "配方正在下发，暂时无法编辑地址。"
-        : snapshot.Running ? "测试进行中，地址配置已锁定。"
-        : "管理员可编辑；测试运行期间地址配置将自动锁定。";
-    public bool CanUseManual => !busy && manualOnline && !manualBlockedByStage
-        && (IsSimulation || IsAdministrator);
-    public bool CanEditRecipe => !busy && !snapshot.Running && IsAdministrator;
+        : "管理员可编辑地址配置。";
+    public bool CanUseManual => !busy && manualOnline && !manualBlockedByStage;
+    public bool CanEditRecipe => !busy;
     public bool CanApplyRecipe => CanEditRecipe && !sendingRecipe && online && station.CanApplyRecipe && snapshot.Stage != TestStage.Fault;
-    public bool CanDelete => !busy && IsAdministrator;
+    public bool CanDelete => !busy;
     public bool CanLogout => !busy && IsAdministrator;
     public string OperatorLabel => IsAdministrator ? $"{AdministratorName} · 管理员" : "未登录";
     public string ActiveRecipeLabel => activeRecipe.Name;
     public string ApplyLabel => IsSimulation ? "启用配方" : "启用并下发 PLC";
-    public string RecipeHint => !IsAdministrator ? "请登录管理员账号编辑" :
-        IsSimulation ? "模拟配方" : station.CanApplyRecipe ? "PLC 配方" : "本地配方 · 未配置 PLC 配方地址";
+    public string RecipeHint => IsSimulation ? "模拟配方" : station.CanApplyRecipe ? "PLC 配方" : "本地配方 · 未配置 PLC 配方地址";
     public string ManualHint => IsSimulation ? "模拟设备 · 按下写 1，松开写 0" : !manualOnline ? "Y 输出反馈不可用" :
-        manualBlockedByStage ? "PLC 正在测试或处于故障状态" :
-        !IsAdministrator ? "请先登录" : "按下写 1，松开写 0";
+        manualBlockedByStage ? "PLC 正在测试或处于故障状态" : "按下写 1，松开写 0";
     public string ManualError { get => manualError; set => Set(ref manualError, value); }
     public bool HistoryEmpty => records.Count == 0;
     public string HistoryCount => $"共 {records.Count} 条记录";
@@ -117,8 +118,8 @@ public sealed class StationView : Bindable
 
     public string RuntimeLabel { get => runtimeLabel; private set => Set(ref runtimeLabel, value); }
     public string RuntimeStatus { get => runtimeStatus; private set => Set(ref runtimeStatus, value); }
-    public bool CanEditSystemSettings => !busy && IsAdministrator;
-    public bool CanCapture => !busy && !snapshot.Running && (IsSimulation || IsAdministrator);
+    public bool CanEditSystemSettings => !busy;
+    public bool CanCapture => !busy && !snapshot.Running;
 
     public void UpdateRuntime(TimeSpan total, string status)
     {
@@ -129,10 +130,11 @@ public sealed class StationView : Bindable
     internal void UpdateScannerResult(ScannerResult result)
     {
         scannerBarcode = result.Barcode;
-        scannerModel = result.Model;
+        scannerMismatch = result.VerdictCode != 1;
         scannerComparisonLabel = result.Comparison;
         Changed(nameof(BarcodeLabel));
-        Changed(nameof(ModelLabel));
+        Changed(nameof(ModelMismatch));
+        Changed(nameof(ModelColor));
         Changed(nameof(ScannerComparisonLabel));
     }
 
@@ -181,7 +183,6 @@ public sealed class StationView : Bindable
             Changed(nameof(Snapshot));
             Changed(nameof(StageLabel));
             Changed(nameof(BarcodeLabel));
-            Changed(nameof(ModelLabel));
         }
         UpdateInspectionSwitches(feedback, unknownFeedback);
         if (permissionsChanged)
@@ -210,9 +211,11 @@ public sealed class StationView : Bindable
     {
         foreach (var action in ManualActions)
             action.Feedback = feedback is ushort bits ? (bits & (1 << (int)action.Id)) != 0 : null;
-        if (manualOnline == feedback.HasValue)
-            return;
+        bool changed = manualOnline != feedback.HasValue;
         manualOnline = feedback.HasValue;
+        RefreshManualAvailability();
+        if (!changed)
+            return;
         Changed(nameof(CanUseManual));
         Changed(nameof(ManualHint));
     }
@@ -225,13 +228,25 @@ public sealed class StationView : Bindable
             item.Feedback = online && (unknownFeedback & mask) == 0 ? (feedback & mask) != 0 : null;
             RefreshInspectionAvailability(item);
         }
+        Changed(nameof(ShowIndicatorOffCameraVerdict));
+        Changed(nameof(ShowHeadlightIndicatorCameraVerdict));
     }
 
     private void Refresh()
     {
         foreach (var item in InspectSwitches)
             RefreshInspectionAvailability(item);
+        RefreshManualAvailability();
         Changed("");
+    }
+
+    // 相机拍照按钮不依赖 PLC，其余手动输出随 PLC 可用性启停。
+    private void RefreshManualAvailability()
+    {
+        bool manual = CanUseManual;
+        bool capture = CanCapture;
+        foreach (var action in ManualActions)
+            action.Available = action.Id == ManualPointId.Photo ? capture : manual;
     }
 
     private void RefreshInspectionAvailability(InspectionSwitch item) =>

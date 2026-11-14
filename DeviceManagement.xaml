@@ -74,6 +74,11 @@
             <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
             <Setter Property="FontFamily" Value="Consolas, Microsoft YaHei UI"/>
+            <Style.Triggers>
+                <Trigger Property="Text" Value="未读到条码（NG）">
+                    <Setter Property="Foreground" Value="{StaticResource Red}"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
     </UserControl.Resources>
     <Grid>

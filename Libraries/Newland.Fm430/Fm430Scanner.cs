@@ -1,12 +1,13 @@
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
+using System.Text;
 
 namespace Newland.Fm430;
 
 public sealed class Fm430Scanner : IAsyncDisposable
 {
-    private static readonly byte[] StartCommand = [0x01, 0x54, 0x04];
-    private static readonly byte[] StopCommand = [0x01, 0x50, 0x04];
+    private byte[] startCommand = [0x01, 0x54, 0x04];
+    private byte[] stopCommand = [0x01, 0x50, 0x04];
     private readonly Fm430SerialOptions options;
     private readonly Func<Fm430SerialOptions, ISerialTransport> openTransport;
     private readonly SemaphoreSlim lifecycle = new(1, 1);
@@ -32,6 +33,18 @@ public sealed class Fm430Scanner : IAsyncDisposable
     }
 
     public bool IsConnected => connected;
+
+    public byte[] StartCommand
+    {
+        get => startCommand;
+        set => startCommand = ValidateTriggerCommand(value);
+    }
+
+    public byte[] StopCommand
+    {
+        get => stopCommand;
+        set => stopCommand = ValidateTriggerCommand(value);
+    }
 
     public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
@@ -74,8 +87,31 @@ public sealed class Fm430Scanner : IAsyncDisposable
         finally { lifecycle.Release(); }
     }
 
-    public Task StartScanningAsync(CancellationToken cancellationToken = default) => SendAsync(StartCommand, cancellationToken);
-    public Task StopScanningAsync(CancellationToken cancellationToken = default) => SendAsync(StopCommand, cancellationToken);
+    public Task StartScanningAsync(CancellationToken cancellationToken = default) => SendAsync(startCommand, cancellationToken);
+    public Task StopScanningAsync(CancellationToken cancellationToken = default) => SendAsync(stopCommand, cancellationToken);
+
+    // 手册的设置/批处理命令串（如 "@ORTSET3000;"）经串口下发；手册将其列为设置码，串口是否接受需现场验证。
+    public Task SendSetupAsync(string commands, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commands);
+        if (commands.Any(c => c > 0x7F))
+            throw new ArgumentException("设置指令仅支持 ASCII 字符。", nameof(commands));
+        return SendAsync(Encoding.ASCII.GetBytes(commands), cancellationToken);
+    }
+
+    public Task SetReadTimeoutAsync(int milliseconds, CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(milliseconds);
+        return SendSetupAsync($"@ORTSET{milliseconds};", cancellationToken);
+    }
+
+    private static byte[] ValidateTriggerCommand(byte[] command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        if (command.Length is < 1 or > 10 || command[0] == 0x3F || command.Any(b => b == 0))
+            throw new ArgumentException("触发/停止指令须为 1–10 个非零字节，且首字节不能为 0x3F（'?'）。", nameof(command));
+        return (byte[])command.Clone();
+    }
 
     public async Task SendAsync(ReadOnlyMemory<byte> command, CancellationToken cancellationToken = default)
     {

@@ -28,6 +28,8 @@ public partial class MainWindow : Window
         (MonitorPointId.NormalSpeedVerdict, "正常转速判定结果"),
         (MonitorPointId.DirectionVerdict, "转速方向判定结果"),
         (MonitorPointId.BrushLightOffVerdict, "地刷灯灭判定"),
+        (MonitorPointId.IndicatorOffCameraVerdict, "跑马灯灭相机判定"),
+        (MonitorPointId.HeadlightIndicatorCameraVerdict, "头灯跑马灯相机判定"),
         (MonitorPointId.DustCurrent, "灰尘测试电流"),
         (MonitorPointId.DustCurrentVerdict, "灰尘电流判定结果"),
         (MonitorPointId.DustPower, "灰尘测试功率"),
@@ -58,10 +60,14 @@ public partial class MainWindow : Window
     private Dictionary<string, InspectionPoint> inspectionPoints = new();
     private Button? heldManualButton;
     private Key heldManualKey;
+    private Button? heldResetButton;
+    private Key heldResetKey;
+    private Task resetPress = Task.CompletedTask;
     private Task manualPress = Task.CompletedTask;
     private Task manualRelease = Task.CompletedTask;
     private bool manualReleasePending;
     private int manualScanBusy;
+    private int manualPhotoBusy;
     private CancellationTokenSource? pollCancellation;
     private Task polling = Task.CompletedTask;
     private Task recipeDispatch = Task.CompletedTask;
@@ -169,7 +175,8 @@ public partial class MainWindow : Window
         pollCancellation = new CancellationTokenSource();
         polling = Task.WhenAll(PollAsync(view.Station, pollCancellation.Token),
             PollManualAsync(view.Station, pollCancellation.Token),
-            PollScannerAsync(view.Station, pollCancellation.Token));
+            PollScannerAsync(view.Station, pollCancellation.Token),
+            PollPhotoAsync(view.Station, pollCancellation.Token));
     }
 
     private async Task StopPollingAsync()
@@ -317,7 +324,7 @@ public partial class MainWindow : Window
         }
         if (!ScannerTriggerSettings.TryParseRegister(ScannerVerdictAddress.Text, out ushort verdictAddress))
         {
-            ScannerSettingsError.Text = "请输入有效的比对结果 D 寄存器地址，例如 D379。";
+            ScannerSettingsError.Text = "请输入有效的比对结果 D 寄存器地址，例如 D3。";
             ScannerVerdictAddress.Focus();
             return;
         }
@@ -342,29 +349,6 @@ public partial class MainWindow : Window
         view.Notice = trigger is ushort coil
             ? $"扫码触发及写回地址已保存：{FormatCoil(coil)}、D{barcodeAddress}、D{verdictAddress}。"
             : "扫码触发已停用；二维码及比对结果地址已保存。";
-    }
-
-    private async void CameraCapture_Click(object sender, RoutedEventArgs e)
-    {
-        if (!view.CanCapture || closing)
-            return;
-        CameraCaptureResult.Text = "拍照中…";
-        CameraCaptureResult.Foreground = (Brush)FindResource("Muted");
-        string result = "拍照失败";
-        await PerformAsync(async () =>
-        {
-            string answer;
-            try { answer = await StationDevices.Camera.RequestAsync("start", TimeSpan.FromSeconds(3)); }
-            catch (Exception ex) { throw new InvalidOperationException($"相机拍照命令未成功。{ex.Message}", ex); }
-            if (answer.Equals("fail", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("相机拍照失败（返回 fail）。");
-            if (!answer.Equals("OK", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException($"相机返回“{answer}”，无法确认拍照结果。");
-            result = "拍照成功";
-            view.Notice = "相机拍照成功。";
-        });
-        CameraCaptureResult.Text = $"{result} · {DateTime.Now:HH:mm:ss}";
-        CameraCaptureResult.Foreground = (Brush)FindResource(result == "拍照成功" ? "Green" : "Red");
     }
 
     private void ResetRuntime_Click(object sender, RoutedEventArgs e)
@@ -493,6 +477,53 @@ public partial class MainWindow : Window
                         view.UpdateScannerStatus("扫码或 PLC 写入失败，等待重试");
                         view.Notice = $"扫码触发处理失败，将重试。{ex.Message}";
                     }
+                }
+
+                await Task.Delay(station.PollMilliseconds, cancellation);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+    }
+
+    private async Task PollPhotoAsync(IStation station, CancellationToken cancellation)
+    {
+        if (station is not ModbusStation plc)
+            return;
+
+        try
+        {
+            while (!cancellation.IsCancellationRequested)
+            {
+                try
+                {
+                    if (Volatile.Read(ref manualPhotoBusy) == 0)
+                    {
+                        PhotoTriggerResult? result = await plc.ProcessPhotoTriggerAsync(async (recipe, token) =>
+                        {
+                            try
+                            {
+                                await StationDevices.Camera.RequestAsync($"switch {recipe}", TimeSpan.FromSeconds(3));
+                                await Task.Delay(TimeSpan.FromSeconds(1.5), token);
+                                string answer = await StationDevices.Camera.RequestAsync("start", TimeSpan.FromSeconds(3));
+                                return answer.Equals("OK", StringComparison.OrdinalIgnoreCase);
+                            }
+                            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                            catch (Exception ex)
+                            {
+                                view.Notice = $"拍照任务相机通讯失败，按 fail 处理。{ex.Message}";
+                                return false;
+                            }
+                        }, cancellation);
+                        if (result is not null)
+                            view.Notice = $"拍照任务完成：配方 {result.Recipe}，结果 {(result.Ok ? "OK" : "fail")}，已写入 D44 并清零 D61。";
+                    }
+                }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { break; }
+                catch (Exception ex)
+                {
+                    if (cancellation.IsCancellationRequested)
+                        break;
+                    view.Notice = $"拍照触发处理失败，将重试。{ex.Message}";
                 }
 
                 await Task.Delay(station.PollMilliseconds, cancellation);
@@ -692,8 +723,6 @@ public partial class MainWindow : Window
                     throw new InvalidOperationException("请输入有效的写入地址和反馈地址。");
                 if (point == action.Point)
                     return;
-                if (view.Snapshot.Running)
-                    throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改点位。");
 
                 var updated = new Dictionary<ManualPointId, ManualPoint>(manualPoints) { [action.Id] = point };
                 if (station is not null)
@@ -716,6 +745,8 @@ public partial class MainWindow : Window
 
     private void Manual_MouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (sender is Button { CommandParameter: ManualPointId.Photo })
+            return;
         e.Handled = true;
         if (sender is Button button && CanStartManual(button))
         {
@@ -727,8 +758,20 @@ public partial class MainWindow : Window
 
     private void Manual_MouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (sender is Button { CommandParameter: ManualPointId.Photo })
+            return;
         e.Handled = true;
         if (sender == heldManualButton && heldManualKey == Key.None)
+            ReleaseHeldManual();
+    }
+
+    // 对齐 Scada 手动页：指针移出按钮即松开，避免拖出后输出保持。
+    private void Manual_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (sender != heldManualButton || heldManualKey != Key.None || sender is not Button button)
+            return;
+        Point position = e.GetPosition(button);
+        if (position.X < 0 || position.Y < 0 || position.X > button.ActualWidth || position.Y > button.ActualHeight)
             ReleaseHeldManual();
     }
 
@@ -740,6 +783,8 @@ public partial class MainWindow : Window
 
     private void Manual_KeyDown(object sender, KeyEventArgs e)
     {
+        if (sender is Button { CommandParameter: ManualPointId.Photo })
+            return;
         if (e.Key is not (Key.Space or Key.Enter))
             return;
         e.Handled = true;
@@ -749,6 +794,8 @@ public partial class MainWindow : Window
 
     private void Manual_KeyUp(object sender, KeyEventArgs e)
     {
+        if (sender is Button { CommandParameter: ManualPointId.Photo })
+            return;
         if (e.Key is not (Key.Space or Key.Enter))
             return;
         e.Handled = true;
@@ -762,8 +809,43 @@ public partial class MainWindow : Window
             ReleaseHeldManual();
     }
 
+    private async void ManualAction_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { CommandParameter: ManualPointId.Photo })
+            await CaptureManualPhotoAsync();
+    }
+
+    private async Task CaptureManualPhotoAsync()
+    {
+        if (!view.CanCapture || closing || Interlocked.Exchange(ref manualPhotoBusy, 1) == 1)
+            return;
+        var action = view.ManualActions.First(item => item.Id == ManualPointId.Photo);
+        ShowManualResult(action, "拍照中…", "pending");
+        string result = "拍照失败";
+        try
+        {
+            await PerformAsync(async () =>
+            {
+                string answer;
+                try { answer = await StationDevices.Camera.RequestAsync("start", TimeSpan.FromSeconds(3)); }
+                catch (Exception ex) { throw new InvalidOperationException($"相机拍照命令未成功。{ex.Message}", ex); }
+                if (answer.Equals("fail", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("相机拍照失败（返回 fail）。");
+                if (!answer.Equals("OK", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"相机返回“{answer}”，无法确认拍照结果。");
+                result = "拍照成功";
+                view.Notice = "相机拍照成功。";
+            });
+        }
+        finally
+        {
+            ShowManualResult(action, $"{result} · {DateTime.Now:HH:mm:ss}", result == "拍照成功" ? "ok" : "error");
+            Interlocked.Exchange(ref manualPhotoBusy, 0);
+        }
+    }
+
     private bool CanStartManual(Button button) => !closing && currentPage == 1 && view.CanUseManual
-        && button.CommandParameter is ManualPointId && heldManualButton is null
+        && button.CommandParameter is ManualPointId id && id != ManualPointId.Photo && heldManualButton is null
         && manualRelease.IsCompleted && !manualReleasePending;
 
     private async void BeginManual(Button button, Key key)
@@ -792,16 +874,16 @@ public partial class MainWindow : Window
         if (Interlocked.Exchange(ref manualScanBusy, 1) == 1)
             return;
         var action = view.ManualActions.First(item => item.Id == ManualPointId.Scan);
-        ShowManualScanResult(action, "扫码中…", "pending");
+        ShowManualResult(action, "扫码中…", "pending");
         try
         {
             string barcode = await StationDevices.Scanner.ScanAsync(TimeSpan.FromSeconds(3), CancellationToken.None);
-            ShowManualScanResult(action, string.IsNullOrWhiteSpace(barcode) ? "未读到条码" : barcode,
+            ShowManualResult(action, string.IsNullOrWhiteSpace(barcode) ? "未读到条码" : barcode,
                 string.IsNullOrWhiteSpace(barcode) ? "error" : "ok");
         }
         catch (Exception ex)
         {
-            ShowManualScanResult(action, ex.Message, "error");
+            ShowManualResult(action, ex.Message, "error");
         }
         finally
         {
@@ -809,7 +891,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ShowManualScanResult(ManualAction action, string text, string state)
+    private void ShowManualResult(ManualAction action, string text, string state)
     {
         if (closing)
             return;
@@ -956,9 +1038,6 @@ public partial class MainWindow : Window
                 });
             dialog.SetSaveAction(async () =>
             {
-                if (view.Snapshot.Running)
-                    throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改地址。");
-
                 var updated = new Dictionary<RecipePointId, ushort>(recipePoints);
                 if (dialog.RecipeAddress is ushort address && address != defaultAddress)
                     updated[id] = address;
@@ -1007,19 +1086,109 @@ public partial class MainWindow : Window
         });
     }
 
-    private async void Reset_Click(object sender, RoutedEventArgs e)
+    private void Reset_MouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (view.CanReset)
-            await PerformAsync(async () =>
-            {
-                if (storageError is not null)
-                    throw new InvalidOperationException(storageError);
-                var reading = await view.Station.ReadAsync(CancellationToken.None);
-                if (reading.Test.Stage == TestStage.Completed && UsesCompletionArchive(view.Station))
-                    Archive(view.Station, reading.Test);
-                await view.Station.ResetAsync();
-                view.Notice = view.IsSimulation ? "模拟命令已执行。" : "PLC 已接收命令，请查看设备反馈。";
-            });
+        e.Handled = true;
+        if (sender is Button button && CanStartReset(button))
+        {
+            button.Focus();
+            if (button.CaptureMouse())
+                BeginReset(button, Key.None);
+        }
+    }
+
+    private void Reset_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (sender == heldResetButton && heldResetKey == Key.None)
+            ReleaseHeldReset();
+    }
+
+    private void Reset_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (sender == heldResetButton && heldResetKey == Key.None)
+            ReleaseHeldReset();
+    }
+
+    private void Reset_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Space or Key.Enter))
+            return;
+        e.Handled = true;
+        if (!e.IsRepeat && sender is Button button && CanStartReset(button))
+            BeginReset(button, e.Key);
+    }
+
+    private void Reset_KeyUp(object sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Space or Key.Enter))
+            return;
+        e.Handled = true;
+        if (sender == heldResetButton && heldResetKey == e.Key)
+            ReleaseHeldReset();
+    }
+
+    private void Reset_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender == heldResetButton && heldResetKey != Key.None)
+            ReleaseHeldReset();
+    }
+
+    private bool CanStartReset(Button button) => !closing && view.CanReset && heldResetButton is null;
+
+    private async void BeginReset(Button button, Key key)
+    {
+        heldResetButton = button;
+        heldResetKey = key;
+        button.Tag = "held";
+        resetPress = PressResetAsync(view.Station);
+        try
+        {
+            await resetPress;
+            view.Notice = view.IsSimulation ? "模拟命令已执行。" : "PLC 已接收命令，请查看设备反馈。";
+        }
+        catch (Exception ex)
+        {
+            view.Notice = ex.Message;
+            if (heldResetButton == button)
+                ReleaseHeldReset();
+        }
+    }
+
+    private async Task PressResetAsync(IStation station)
+    {
+        if (storageError is not null)
+            throw new InvalidOperationException(storageError);
+        if (UsesCompletionArchive(station))
+        {
+            var reading = await station.ReadAsync(CancellationToken.None);
+            if (reading.Test.Stage == TestStage.Completed)
+                Archive(station, reading.Test);
+        }
+        await station.ResetAsync(true);
+    }
+
+    private void ReleaseHeldReset()
+    {
+        if (heldResetButton is not { } button)
+            return;
+        heldResetButton = null;
+        heldResetKey = Key.None;
+        button.Tag = null;
+        if (button.IsMouseCaptured)
+            button.ReleaseMouseCapture();
+        _ = ReleaseResetAsync(view.Station, resetPress);
+    }
+
+    private async Task ReleaseResetAsync(IStation station, Task press)
+    {
+        try { await press; }
+        catch { /* A failed response does not prove the PLC missed the write. */ }
+        try { await station.ResetAsync(false); }
+        catch (Exception ex)
+        {
+            view.Notice = $"复位未确认清零。{ex.Message}";
+        }
     }
 
     private async void EditResetAddress_Click(object sender, RoutedEventArgs e)
@@ -1045,9 +1214,6 @@ public partial class MainWindow : Window
                 });
             dialog.SetSaveAction(async () =>
             {
-                if (view.Snapshot.Running)
-                    throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改复位地址。");
-
                 var selected = dialog.ResetAddress;
                 var overrideAddress = selected == defaultAddress ? null : selected;
                 if (overrideAddress == current)
@@ -1137,8 +1303,6 @@ public partial class MainWindow : Window
             {
                 if (dialog.InspectionResult is not { } point || point == current)
                     return;
-                if (view.Snapshot.Running)
-                    throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改点位。");
 
                 if (settings.Commands.TryGetValue(item.Key, out ushort defaultWrite) && point.WriteAddress == defaultWrite)
                     point = point with { WriteAddress = null };
@@ -1197,8 +1361,6 @@ public partial class MainWindow : Window
             Recipe? created = null;
             var dialog = new NewRecipeDialog(template, recipe =>
             {
-                if (view.Snapshot.Running)
-                    throw new InvalidOperationException("测试进行中，请在测试结束后创建配方。");
                 store.SaveRecipe(recipe, false);
                 created = recipe;
             }) { Owner = this };

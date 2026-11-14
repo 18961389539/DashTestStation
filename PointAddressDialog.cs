@@ -198,7 +198,7 @@ internal sealed class PointAddressDialog : Window
             SetPreview($"有效寄存器：{selectedRange}；默认：{defaultRange}；"
                 + (matchesDefault ? "当前使用默认地址和类型。" : defaultPoint is null
                     ? "默认未配置。" : hasOverride ? "当前为自定义地址或类型。" : "地址或类型已修改。"));
-            help.Text = $"信捷 XD3：可填写 D100、HD0 或从 0 开始的十进制寄存器地址。{type} 占用 {point.WordCount} 个寄存器。";
+            help.Text = $"信捷 XD3：可填写 D100、HD0、HM1 或从 0 开始的十进制寄存器地址。{type} 占用 {point.WordCount} 个寄存器。";
             if (definition.ScaledUnit is { } unit)
                 help.Text += type == RegisterDataType.Float32
                     ? $" 浮点值直接以 {unit} 显示。" : $" 整数原始值 × 0.01 {unit}。";
@@ -222,7 +222,7 @@ internal sealed class PointAddressDialog : Window
             var type = SelectedType();
             int max = 65536 - new MonitorPoint(0, type).WordCount;
             if (!PlcAddress.TryParseRegister(input, out ushort value) || value > max)
-                return InvalidField(address, $"请输入 D/HD 编号或 0–{max} 之间的整数地址。");
+                return InvalidField(address, $"请输入 D/HD/HM 编号或 0–{max} 之间的整数地址。");
 
             MonitorResult = new MonitorPoint(value, type);
             return true;
@@ -236,7 +236,7 @@ internal sealed class PointAddressDialog : Window
         int max = 65536 - point.WordCount;
         string format = point.IsFloat ? "Float32" : point.WordCount == 1 ? "UInt16" : "Int32";
         string scale = point.Scale == 1 ? "" : $"，写入值为配方值 × {point.Scale}";
-        help.Text = $"保持寄存器，可填写 D100、HD0 或从 0 开始的十进制地址。{format} 占用 {point.WordCount} 个寄存器{scale}。"
+        help.Text = $"保持寄存器，可填写 D100、HD0、HM1 或从 0 开始的十进制地址。{format} 占用 {point.WordCount} 个寄存器{scale}。"
             + (defaultAddress is ushort fallback0 ? $" 留空使用默认地址 {PlcAddress.FormatRegister(fallback0)}。" : " 留空清除该点位。");
 
         ConfigureSave(() =>
@@ -245,7 +245,7 @@ internal sealed class PointAddressDialog : Window
             if (text.Length != 0)
             {
                 if (!PlcAddress.TryParseRegister(text, out ushort value) || value > max)
-                    return InvalidField(address, $"请输入 D/HD 编号或 0–{max} 之间的整数地址。");
+                    return InvalidField(address, $"请输入 D/HD/HM 编号或 0–{max} 之间的整数地址。");
                 RecipeAddress = value;
             }
             return true;
@@ -255,7 +255,7 @@ internal sealed class PointAddressDialog : Window
             bool hasInput = !string.IsNullOrWhiteSpace(address.Text);
             bool validInput = PlcAddress.TryParseRegister(address.Text, out ushort parsed);
             if (hasInput && !validInput)
-                return "有效寄存器：地址无效，请填写 D/HD 编号或 0–65535 范围内的整数。";
+                return "有效寄存器：地址无效，请填写 D/HD/HM 编号或 0–65535 范围内的整数。";
             if (parsed > max)
                 return $"有效寄存器：地址超出范围（最大起始地址 {max}）。";
             ushort? selected = validInput ? parsed : null;
@@ -272,7 +272,7 @@ internal sealed class PointAddressDialog : Window
     {
         var address = AddTextField("寄存器起始地址", PlcAddress.FormatRegister(current.Address), 6);
         var count = AddTextField("寄存器数量", current.WordCount.ToString(CultureInfo.InvariantCulture), 3);
-        help.Text = "可填写 D100、HD0 或从 0 开始的十进制地址。二维码按 UTF-8 解码，每个寄存器存放 2 个字节，高字节在前，遇到 NUL 结束。";
+        help.Text = "可填写 D100、HD0、HM1 或从 0 开始的十进制地址。二维码按 UTF-8 解码，每个寄存器存放 2 个字节，高字节在前，遇到 NUL 结束。";
         var reset = new Button { Content = "恢复默认", Margin = new Thickness(0, 0, 8, 0) };
         reset.Click += (_, _) =>
         {
@@ -285,7 +285,7 @@ internal sealed class PointAddressDialog : Window
         ConfigureSave(() =>
         {
             if (!PlcAddress.TryParseRegister(address.Text, out ushort start))
-                return InvalidField(address, "请输入 D/HD 编号或 0–65535 之间的整数地址。");
+                return InvalidField(address, "请输入 D/HD/HM 编号或 0–65535 之间的整数地址。");
             if (!ushort.TryParse(count.Text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out ushort words)
                 || words is < 1 or > BarcodePoint.MaxWords || start + words > 65536)
                 return InvalidField(count, $"请输入 1–{BarcodePoint.MaxWords} 个寄存器，且起始地址与数量之和不得超过 65536。");

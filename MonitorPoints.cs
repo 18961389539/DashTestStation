@@ -9,6 +9,7 @@ public enum MonitorPointId
     Voltage, Result, BrushLightVerdict,
     NormalVoltage, NormalCurrent, NormalCurrentVerdict, NormalPowerVerdict, NormalSpeedVerdict,
     BrushLightOffVerdict, DustCurrent, DustCurrentVerdict, DustPowerVerdict, DustSpeedVerdict,
+    IndicatorOffCameraVerdict, HeadlightIndicatorCameraVerdict,
     RunState
 }
 
@@ -35,7 +36,7 @@ internal sealed record BarcodePoint(ushort Address, ushort WordCount)
 }
 
 internal sealed record MonitorPointDefinition(
-    string Label, int? Offset, RegisterDataType DefaultType, string? ScaledUnit = null)
+    string Label, int? Offset, RegisterDataType DefaultType, string? ScaledUnit = null, ushort? Absolute = null)
 {
     private static readonly Dictionary<MonitorPointId, MonitorPointDefinition> Definitions = new()
     {
@@ -61,13 +62,16 @@ internal sealed record MonitorPointDefinition(
         [MonitorPointId.DustCurrentVerdict] = new("灰尘电流判定结果", null, RegisterDataType.UInt16),
         [MonitorPointId.DustPowerVerdict] = new("灰尘功率判定结果", null, RegisterDataType.UInt16),
         [MonitorPointId.DustSpeedVerdict] = new("灰尘转速判定结果", null, RegisterDataType.UInt16),
+        [MonitorPointId.IndicatorOffCameraVerdict] = new("跑马灯灭相机判定", null, RegisterDataType.UInt16, Absolute: PlcAddress.HMBase + 2),
+        [MonitorPointId.HeadlightIndicatorCameraVerdict] = new("头灯跑马灯相机判定", null, RegisterDataType.UInt16, Absolute: PlcAddress.HMBase + 1),
         [MonitorPointId.RunState] = new("运行状态", 0, RegisterDataType.Int16)
     };
 
     public static MonitorPointDefinition For(MonitorPointId id) => Definitions[id];
 
-    public MonitorPoint? DefaultAt(ushort baseAddress) => Offset is int offset
-        ? new(checked((ushort)(baseAddress + offset)), DefaultType) : null;
+    public MonitorPoint? DefaultAt(ushort baseAddress) => Absolute is ushort absolute
+        ? new(absolute, DefaultType)
+        : Offset is int offset ? new(checked((ushort)(baseAddress + offset)), DefaultType) : null;
 
     public double Decode(RegisterDataType type, ReadOnlySpan<ushort> words, bool lowWordFirst)
     {
@@ -96,8 +100,7 @@ internal sealed class MonitorReadPlan
     private readonly Dictionary<MonitorPointId, MonitorPoint> points = new();
     private readonly BarcodePoint? barcodeOverride;
     private readonly BarcodePoint barcode;
-    private readonly List<(int Start, int End)> liveBlocks;
-    private readonly List<(int Start, int End)> completedBlocks;
+    private readonly List<(int Start, int End)> additionalBlocks;
 
     public MonitorReadPlan(PlcSettings settings, IReadOnlyDictionary<MonitorPointId, MonitorPoint> overrides,
         BarcodePoint? barcodeOverride = null)
@@ -121,9 +124,7 @@ internal sealed class MonitorReadPlan
             points.Add(id, point);
         }
 
-        liveBlocks = MergeAdditionalBlocks(points.Where(entry => MonitorPointDefinition.For(entry.Key).Offset.HasValue)
-            .Select(entry => entry.Value));
-        completedBlocks = MergeAdditionalBlocks(points.Values);
+        additionalBlocks = MergeAdditionalBlocks(points.Values);
     }
 
     public MonitorReadPlan WithPoints(IReadOnlyDictionary<MonitorPointId, MonitorPoint> overrides) =>
@@ -157,9 +158,9 @@ internal sealed class MonitorReadPlan
     private bool InTelemetry(int start, int end) => start >= settings.TelemetryAddress
         && end <= settings.TelemetryAddress + PlcLayout.TelemetryWords;
 
-    public bool OverlapsHoldingRegisters(int start, int end) => !settings.UseInputRegisters &&
-        (start < settings.TelemetryAddress + PlcLayout.TelemetryWords && settings.TelemetryAddress < end
-            || start < barcode.End && barcode.Address < end
+    public bool OverlapsHoldingRegisters(int start, int end, bool includeBarcode = true, bool includeTelemetryBlock = true) => !settings.UseInputRegisters &&
+        ((includeTelemetryBlock && start < settings.TelemetryAddress + PlcLayout.TelemetryWords && settings.TelemetryAddress < end)
+            || (includeBarcode && start < barcode.End && barcode.Address < end)
             || points.Values.Any(point => start < point.End && point.Address < end));
 
     public (TestSnapshot Test, ushort Feedback) Read(Func<ushort, ushort, ushort[]> read, bool triggered = false)
@@ -168,7 +169,6 @@ internal sealed class MonitorReadPlan
         {
             var telemetry = read(settings.TelemetryAddress, PlcLayout.TelemetryWords);
             ushort runState = ReadRunState(read, telemetry);
-            var additionalBlocks = triggered ? completedBlocks : liveBlocks;
             var extra = additionalBlocks.Select(block =>
                 read((ushort)block.Start, (ushort)(block.End - block.Start))).ToArray();
             bool barcodeInTelemetry = InTelemetry(barcode.Address, barcode.End);
@@ -186,7 +186,7 @@ internal sealed class MonitorReadPlan
             double? Value(MonitorPointId id)
             {
                 var definition = MonitorPointDefinition.For(id);
-                if ((!triggered && !definition.Offset.HasValue) || !points.TryGetValue(id, out var point))
+                if (!points.TryGetValue(id, out var point))
                     return null;
                 if (InTelemetry(point.Address, point.End))
                     return definition.Decode(point.DataType,

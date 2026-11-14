@@ -18,8 +18,24 @@ public sealed class ScannerTriggerTests
 
         Assert.Equal((ushort)1, result.VerdictCode);
         Assert.Equal("ABMODEL-001", DustLoadScada.PlcLayout.ReadString(result.Words));
-        Assert.Equal(32, result.Words.Length);
+        Assert.Equal(6, result.Words.Length);
         Assert.Equal((ushort)0x4142, result.Words[0]);
+    }
+
+    [Theory]
+    [InlineData("A", 1)]
+    [InlineData("AB", 2)]
+    [InlineData("ABC", 2)]
+    [InlineData("ABCD", 3)]
+    [InlineData("ABMODEL-001", 6)]
+    [InlineData("中文ABC", 5)]
+    public void BarcodeWritesOnlyTheWordsItNeedsPlusANulTerminator(string barcode, int expectedWords)
+    {
+        var result = DustLoadScada.ScannerResult.Create(barcode, new DustLoadScada.Recipe());
+
+        Assert.Equal(expectedWords, result.Words.Length);
+        Assert.Equal(barcode, DustLoadScada.PlcLayout.ReadString(result.Words));
+        Assert.Equal(0, result.Words[^1] & 0xFF);
     }
 
     [Theory]
@@ -86,16 +102,19 @@ public sealed class ScannerTriggerTests
     public void BarcodeMustFitTheConfiguredRegisterBlockWithoutTruncation()
     {
         var recipe = new DustLoadScada.Recipe();
-        DustLoadScada.ScannerResult.Create(new string('A', 64), recipe);
+        Assert.Equal(80, DustLoadScada.ScannerResult.Create(new string('A', 159), recipe).Words.Length);
+        Assert.Equal(80, DustLoadScada.ScannerResult.Create(new string('A', 160), recipe).Words.Length);
 
         Assert.Throws<InvalidOperationException>(() =>
-            DustLoadScada.ScannerResult.Create(new string('A', 65), recipe));
+            DustLoadScada.ScannerResult.Create(new string('A', 161), recipe));
     }
 
     [Theory]
     [InlineData("D4000", 4000)]
     [InlineData("379", 379)]
     [InlineData("HD0", 0xA080)]
+    [InlineData("HM1", 0xC101)]
+    [InlineData("HM2", 0xC102)]
     public void RegisterAddressAcceptsDeviceAndDecimalSyntax(string text, ushort expected)
     {
         Assert.True(DustLoadScada.ScannerTriggerSettings.TryParseRegister(text, out ushort address));
@@ -152,8 +171,27 @@ public sealed class ScannerTriggerTests
     public void ScannerRegisterSettingsRejectOutOfRangeAndOverlappingAddresses()
     {
         Assert.Throws<InvalidOperationException>(() =>
-            new DustLoadScada.ScannerTriggerSettings(BarcodeAddress: 65505).Validate());
+            new DustLoadScada.ScannerTriggerSettings(BarcodeAddress: 65457).Validate());
+        new DustLoadScada.ScannerTriggerSettings(BarcodeAddress: 65456).Validate();
         Assert.Throws<InvalidOperationException>(() =>
-            new DustLoadScada.ScannerTriggerSettings(BarcodeAddress: 4000, VerdictAddress: 4031).Validate());
+            new DustLoadScada.ScannerTriggerSettings(BarcodeAddress: 4000, VerdictAddress: 4079).Validate());
+        new DustLoadScada.ScannerTriggerSettings(BarcodeAddress: 4000, VerdictAddress: 4080).Validate();
+    }
+
+    [Fact]
+    public void VerdictDefaultsToD3AndMayShareTelemetryBlockOnlyIfUnmapped()
+    {
+        var settings = new DustLoadScada.PlcSettings();
+        Assert.Equal((ushort)3, new DustLoadScada.ScannerTriggerSettings().VerdictAddress);
+
+        // D3 落在监控整块 D0–D63 内，但没有监控点占用，默认比对结果 D3 应能正常启动。
+        using var station = new DustLoadScada.ModbusStation(settings);
+
+        // 一旦 D3 被映射成监控点，比对结果再写 D3 就必须被拒绝。
+        var overrides = new Dictionary<DustLoadScada.MonitorPointId, DustLoadScada.MonitorPoint>
+        {
+            [DustLoadScada.MonitorPointId.RunState] = new(3, DustLoadScada.RegisterDataType.Int16)
+        };
+        Assert.Throws<InvalidOperationException>(() => new DustLoadScada.ModbusStation(settings, overrides));
     }
 }

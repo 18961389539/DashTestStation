@@ -242,8 +242,8 @@ public partial class DeviceManagement : UserControl
             ? Visibility.Visible : Visibility.Collapsed;
         PlcTestHint.Text = area switch
         {
-            PlcTestArea.HoldingRegisters => "写入范围 0–65535 · 需管理员登录",
-            PlcTestArea.Coils => "0 关 / 1 开 · 需管理员登录",
+            PlcTestArea.HoldingRegisters => "写入范围 0–65535",
+            PlcTestArea.Coils => "0 关 / 1 开",
             _ => "该数据区只读。"
         };
         PlcTestValue.Clear();

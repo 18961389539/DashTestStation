@@ -10,15 +10,16 @@ namespace DustLoadScada;
 public sealed record PlcSettings
 {
     private static readonly JsonSerializerOptions FileOptions = new() { PropertyNameCaseInsensitive = true, WriteIndented = true };
-    public string Host { get; init; } = "192.168.1.10";
+    public string Host { get; init; } = "192.168.6.6";
     public int Port { get; init; } = 502;
     public byte UnitId { get; init; } = 1;
     public string StationId { get; init; } = "台架-01";
     public int PollMilliseconds { get; init; } = 300;
-    public int TimeoutMilliseconds { get; init; } = 1200;
+    public int TimeoutMilliseconds { get; init; } = 1500;
     public ushort TelemetryAddress { get; init; } = 0;
     public bool UseInputRegisters { get; init; }
-    public bool LowWordFirst { get; init; }
+    // 信捷 XD3 的 Float32/Int32 按 CDAB（低字在前）存放。
+    public bool LowWordFirst { get; init; } = true;
     public ushort? RecipeAddress { get; init; }
     public Dictionary<string, ushort> Commands { get; init; } = new();
 
@@ -97,7 +98,7 @@ public interface IStation : IDisposable
     bool CanApplyRecipe { get; }
     bool Supports(string command);
     Task<StationReading> ReadAsync(CancellationToken cancellationToken);
-    Task ResetAsync();
+    Task ResetAsync(bool pressed);
     Task SetInspectionSwitchAsync(string key, bool enabled);
     Task<ushort> ReadManualAsync(CancellationToken cancellationToken);
     Task SetManualAsync(ManualPointId id, bool pressed);
@@ -106,6 +107,8 @@ public interface IStation : IDisposable
 }
 
 internal enum PlcTestArea { HoldingRegisters, InputRegisters, Coils, DiscreteInputs }
+
+internal sealed record PhotoTriggerResult(ushort Recipe, bool Ok);
 
 public sealed class ModbusStation : IStation
 {
@@ -126,6 +129,10 @@ public sealed class ModbusStation : IStation
     private ScannerTriggerSettings scannerTrigger = new();
     private ScannerResult? pendingScannerResult;
     private bool scannerAcknowledging;
+    // 拍照触发握手：D61 触发、D62 配方号、D44 结果（1=OK，2=fail）。
+    private const ushort PhotoTriggerAddress = 61;
+    private const ushort PhotoRecipeAddress = 62;
+    private const ushort PhotoVerdictAddress = 44;
     private IModbusMaster? master;
     private TcpClient? client;
 
@@ -386,9 +393,6 @@ public sealed class ModbusStation : IStation
 
     internal Task UpdateRecordTriggerAsync(ushort? address, Action save) => ExchangeAsync(connection =>
     {
-        if (ReadStage(connection) is TestStage.Normal or TestStage.Dust)
-            throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改点位。");
-
         _ = InspectionPoints.Validate(settings, inspectionOverrides, manualPoints, address);
         save();
         recordTrigger = address;
@@ -440,6 +444,7 @@ public sealed class ModbusStation : IStation
             ScannerResult result = pendingScannerResult ??= await scan(cancellationToken);
             await ExchangeAsync(connection =>
             {
+                connection.WriteMultipleRegisters(settings.UnitId, points.BarcodeAddress, new ushort[ScannerTriggerSettings.MaxBarcodeWords]);
                 connection.WriteMultipleRegisters(settings.UnitId, points.BarcodeAddress, result.Words);
                 connection.WriteSingleRegister(settings.UnitId, points.VerdictAddress, result.VerdictCode);
                 scannerAcknowledging = true;
@@ -475,11 +480,14 @@ public sealed class ModbusStation : IStation
     private void ValidateScannerRegisterRanges(ScannerTriggerSettings points)
     {
         int barcodeStart = points.BarcodeAddress;
-        int barcodeEnd = barcodeStart + ScannerTriggerSettings.BarcodeWords;
+        int barcodeEnd = barcodeStart + ScannerTriggerSettings.MaxBarcodeWords;
         int verdictStart = points.VerdictAddress;
         int verdictEnd = verdictStart + 1;
-        if (readPlan.OverlapsHoldingRegisters(barcodeStart, barcodeEnd)
-            || readPlan.OverlapsHoldingRegisters(verdictStart, verdictEnd))
+        // The scanner writes the same registers the monitoring page reads back as the barcode,
+        // so that range may coincide with the barcode point; other monitored areas stay protected.
+        // 比对结果可落在监控整块读取区的空闲寄存器（如 PLC 原生扫码判定 D3），但不能覆盖已映射的监控点。
+        if (readPlan.OverlapsHoldingRegisters(barcodeStart, barcodeEnd, includeBarcode: false)
+            || readPlan.OverlapsHoldingRegisters(verdictStart, verdictEnd, includeTelemetryBlock: false))
             throw new InvalidOperationException("扫码结果寄存器不能与 PLC 监控读取区重叠。");
 
         bool Overlaps(int start, int end, int otherStart, int otherEnd) =>
@@ -518,6 +526,28 @@ public sealed class ModbusStation : IStation
             return saved;
         }, cancellationToken);
 
+    internal async Task<PhotoTriggerResult?> ProcessPhotoTriggerAsync(
+        Func<ushort, CancellationToken, Task<bool>> capture, CancellationToken cancellationToken)
+    {
+        ushort[] header = await ExchangeAsync(connection => new[]
+        {
+            ReadRegisters(connection, PhotoTriggerAddress, 1)[0],
+            ReadRegisters(connection, PhotoRecipeAddress, 1)[0]
+        }, cancellationToken);
+        if (header[0] != 1)
+            return null;
+
+        ushort recipe = header[1];
+        bool ok = await capture(recipe, cancellationToken);
+        await ExchangeAsync(connection =>
+        {
+            connection.WriteSingleRegister(settings.UnitId, PhotoVerdictAddress, ok ? (ushort)1 : (ushort)2);
+            connection.WriteSingleRegister(settings.UnitId, PhotoTriggerAddress, 0);
+            return true;
+        }, cancellationToken);
+        return new PhotoTriggerResult(recipe, ok);
+    }
+
     public Task UpdateMonitorPointsAsync(IReadOnlyDictionary<MonitorPointId, MonitorPoint> points, Action save) =>
         UpdateReadPlanAsync(() => readPlan.WithPoints(points), save);
 
@@ -527,9 +557,6 @@ public sealed class ModbusStation : IStation
     private Task UpdateReadPlanAsync(Func<MonitorReadPlan> createPlan, Action save) =>
         ExchangeAsync(connection =>
         {
-            if (ReadStage(connection) is TestStage.Normal or TestStage.Dust)
-                throw new InvalidOperationException("PLC 正在测试，请在测试结束后修改点位。");
-
             var next = createPlan();
             var updatedRecipePlan = new RecipeWritePlan(settings, recipeOverrides, next);
             save();
@@ -551,7 +578,7 @@ public sealed class ModbusStation : IStation
         finally { bus.Release(); }
     }
 
-    public Task ResetAsync()
+    public Task ResetAsync(bool pressed)
     {
         if (!Supports("reset"))
             throw new InvalidOperationException("PLC 未配置复位线圈。");
@@ -560,12 +587,7 @@ public sealed class ModbusStation : IStation
         {
             if (InspectionPoints.Resolve(settings, inspectionOverrides, "reset").WriteAddress is not ushort address)
                 throw new InvalidOperationException("PLC 未配置复位线圈。");
-            EnsureWritable(ReadStage(connection), true);
-            if (recordTrigger is ushort trigger && connection.ReadCoils(settings.UnitId, trigger, 1)[0])
-                throw new InvalidOperationException("PLC 正等待历史记录保存，请稍后复位。");
-            if (connection.ReadCoils(settings.UnitId, address, 1)[0])
-                throw new InvalidOperationException("PLC 尚未清除上一次命令，请检查程序或稍后重试。");
-            connection.WriteSingleCoil(settings.UnitId, address, true);
+            connection.WriteSingleCoil(settings.UnitId, address, pressed);
             return true;
         }, CancellationToken.None);
     }
@@ -591,7 +613,6 @@ public sealed class ModbusStation : IStation
         return ExchangeAsync(connection =>
         {
             var writes = recipePlan.Encode(recipe);
-            EnsureWritable(ReadStage(connection), false);
             foreach (var (address, words) in writes)
             {
                 try { connection.WriteMultipleRegisters(settings.UnitId, address, words); }
@@ -727,6 +748,8 @@ public static class PlcLayout
             DirectionVerdict = RequiredVerdict(MonitorPointId.DirectionVerdict),
             BrushLightVerdict = RequiredVerdict(MonitorPointId.BrushLightVerdict),
             BrushLightOffVerdict = OptionalVerdict(MonitorPointId.BrushLightOffVerdict),
+            IndicatorOffCameraVerdict = OptionalVerdict(MonitorPointId.IndicatorOffCameraVerdict),
+            HeadlightIndicatorCameraVerdict = OptionalVerdict(MonitorPointId.HeadlightIndicatorCameraVerdict),
             NormalCurrentVerdict = OptionalVerdict(MonitorPointId.NormalCurrentVerdict),
             NormalPowerVerdict = OptionalVerdict(MonitorPointId.NormalPowerVerdict),
             NormalSpeedVerdict = OptionalVerdict(MonitorPointId.NormalSpeedVerdict),
@@ -837,6 +860,8 @@ public sealed class SimulationStation : IStation
                 DirectionVerdict = completed ? Verdict.Pass : Verdict.Pending,
                 BrushLightVerdict = completed ? light : Verdict.Pending,
                 BrushLightOffVerdict = completed ? Verdict.Pass : null,
+                IndicatorOffCameraVerdict = completed ? light : null,
+                HeadlightIndicatorCameraVerdict = completed ? light : null,
                 NormalCurrentVerdict = completed ? Verdict.Pass : null,
                 NormalPowerVerdict = completed ? Verdict.Pass : null,
                 NormalSpeedVerdict = completed ? Verdict.Pass : null,
@@ -851,8 +876,10 @@ public sealed class SimulationStation : IStation
         return Task.FromResult(new StationReading(test, feedback));
     }
 
-    public Task ResetAsync()
+    public Task ResetAsync(bool pressed)
     {
+        if (!pressed)
+            return Task.CompletedTask;
         if (test.Running)
             throw new InvalidOperationException("测试期间无法执行手动命令。");
         test = new TestSnapshot();

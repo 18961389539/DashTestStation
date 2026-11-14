@@ -1,20 +1,21 @@
 using System.Globalization;
+using System.Text;
 
 namespace DustLoadScada;
 
 internal sealed record ScannerTriggerSettings(
     ushort? TriggerAddress = PlcAddress.YBase + 9,
     ushort BarcodeAddress = 4000,
-    ushort VerdictAddress = 379)
+    ushort VerdictAddress = 3)
 {
-    internal const int BarcodeWords = 32;
+    internal const int MaxBarcodeWords = 80;
 
     internal void Validate()
     {
-        if (BarcodeAddress + BarcodeWords > 65536)
-            throw new InvalidOperationException("二维码起始地址须为 D0–D65504，需连续占用 32 个寄存器。");
-        if (VerdictAddress >= BarcodeAddress && VerdictAddress < BarcodeAddress + BarcodeWords)
-            throw new InvalidOperationException("比对结果地址不能与二维码的 32 个寄存器重叠。");
+        if (BarcodeAddress + MaxBarcodeWords > 65536)
+            throw new InvalidOperationException("二维码起始地址须为 D0–D65456，需连续占用 80 个寄存器。");
+        if (VerdictAddress >= BarcodeAddress && VerdictAddress < BarcodeAddress + MaxBarcodeWords)
+            throw new InvalidOperationException("比对结果地址不能与二维码的 80 个寄存器重叠。");
     }
 
     internal static bool TryParseRegister(string text, out ushort address) =>
@@ -33,7 +34,9 @@ internal sealed record ScannerResult(string Barcode, string Model, ushort[] Word
             || string.IsNullOrEmpty(recipe.Model))
             throw new InvalidOperationException("当前配方的扫码比对参数无效。");
 
-        var words = new ushort[ScannerTriggerSettings.BarcodeWords];
+        // 字数按实际字节数动态决定，末尾多留一个零字节作结束符；恰好 160 字节时占满预留块。
+        int byteCount = Encoding.UTF8.GetByteCount(barcode);
+        var words = new ushort[Math.Min(ScannerTriggerSettings.MaxBarcodeWords, byteCount / 2 + 1)];
         PlcLayout.WriteString(words, 0, words.Length, barcode, "二维码");
         int start = recipe.BarcodeStartIndex - 1;
         int length = recipe.BarcodeCompareLength == 0 ? recipe.Model.Length : recipe.BarcodeCompareLength;
