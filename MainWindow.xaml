@@ -7,6 +7,7 @@
         WindowStartupLocation="CenterScreen" Language="zh-CN">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="VisibleWhen"/>
+        <local:HistoryDeleteVisibilityConverter x:Key="DeleteWhenSelected"/>
         <Style x:Key="EditIcon" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Width" Value="29"/>
             <Setter Property="Height" Value="24"/>
@@ -662,32 +663,310 @@
                     </TabControl.Resources>
                     <TabItem Header="历史查询">
                         <Grid Margin="0,10,0,0">
+                            <Grid.Resources>
+                                                <Style x:Key="HistoryCalendarNav" TargetType="Button">
+                                                    <Setter Property="Background" Value="Transparent"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                                                    <Setter Property="BorderThickness" Value="0"/>
+                                                    <Setter Property="MinHeight" Value="28"/>
+                                                    <Setter Property="MinWidth" Value="28"/>
+                                                    <Setter Property="Padding" Value="6,2"/>
+                                                    <Setter Property="Cursor" Value="Hand"/>
+                                                    <Setter Property="Focusable" Value="False"/>
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                            <ControlTemplate TargetType="Button">
+                                                                <Border x:Name="Bg" Background="Transparent" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter TargetName="Bg" Property="Background" Value="{StaticResource Raised}"/>
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                </Style>
+                                                <Style x:Key="HistoryCalendarDay" TargetType="CalendarDayButton">
+                                                    <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                                                    <Setter Property="Background" Value="Transparent"/>
+                                                    <Setter Property="FontSize" Value="12"/>
+                                                    <Setter Property="MinWidth" Value="28"/>
+                                                    <Setter Property="MinHeight" Value="24"/>
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                            <ControlTemplate TargetType="CalendarDayButton">
+                                                                <Border x:Name="Bg" Background="{TemplateBinding Background}" CornerRadius="4" Margin="1">
+                                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsInactive" Value="True">
+                                                                        <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter TargetName="Bg" Property="Background" Value="{StaticResource Raised}"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsToday" Value="True">
+                                                                        <Setter TargetName="Bg" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                                                        <Setter TargetName="Bg" Property="BorderThickness" Value="1"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsSelected" Value="True">
+                                                                        <Setter TargetName="Bg" Property="Background" Value="{StaticResource Accent}"/>
+                                                                        <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsBlackedOut" Value="True">
+                                                                        <Setter Property="Opacity" Value="0.35"/>
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                </Style>
+                                                <Style x:Key="HistoryCalendarMonth" TargetType="CalendarButton">
+                                                    <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                                                    <Setter Property="Background" Value="Transparent"/>
+                                                    <Setter Property="FontSize" Value="12"/>
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                            <ControlTemplate TargetType="CalendarButton">
+                                                                <Border x:Name="Bg" Background="{TemplateBinding Background}" CornerRadius="4" Margin="2" Padding="4,6">
+                                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsInactive" Value="True">
+                                                                        <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter TargetName="Bg" Property="Background" Value="{StaticResource Raised}"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="HasSelectedDays" Value="True">
+                                                                        <Setter TargetName="Bg" Property="Background" Value="{StaticResource Accent}"/>
+                                                                        <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                </Style>
+                                                <Style x:Key="HistoryCalendarItem" TargetType="CalendarItem">
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                                            <ControlTemplate TargetType="CalendarItem">
+                                                                                <ControlTemplate.Resources>
+                                                                                    <DataTemplate x:Key="{ComponentResourceKey TypeInTargetAssembly={x:Type CalendarItem}, ResourceId=DayTitleTemplate}">
+                                                                                        <TextBlock Text="{Binding}" Foreground="{StaticResource Muted}" FontSize="12"
+                                                                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                                    </DataTemplate>
+                                                                                </ControlTemplate.Resources>
+                                                                                <Grid x:Name="PART_Root">
+                                                                                    <Grid.Resources>
+                                                                                        <Style TargetType="TextBlock">
+                                                                                            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                                                                                            <Setter Property="HorizontalAlignment" Value="Center"/>
+                                                                                            <Setter Property="VerticalAlignment" Value="Center"/>
+                                                                                            <Setter Property="FontSize" Value="12"/>
+                                                                                        </Style>
+                                                                                        <Style TargetType="ContentControl">
+                                                                                            <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+                                                                                            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                                                                            <Setter Property="VerticalContentAlignment" Value="Center"/>
+                                                                                            <Setter Property="FontSize" Value="12"/>
+                                                                                        </Style>
+                                                                                    </Grid.Resources>
+                                                                    <Border Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}"
+                                                                            BorderThickness="1" CornerRadius="8" Padding="6">
+                                                                        <Grid>
+                                                                            <Grid.RowDefinitions>
+                                                                                <RowDefinition Height="Auto"/>
+                                                                                <RowDefinition Height="Auto"/>
+                                                                            </Grid.RowDefinitions>
+                                                                            <Grid Margin="0,0,0,4">
+                                                                                <Grid.ColumnDefinitions>
+                                                                                    <ColumnDefinition Width="Auto"/>
+                                                                                    <ColumnDefinition Width="*"/>
+                                                                                    <ColumnDefinition Width="Auto"/>
+                                                                                </Grid.ColumnDefinitions>
+                                                                                <Button x:Name="PART_PreviousButton" Style="{StaticResource HistoryCalendarNav}" Content="&#xE76B;"
+                                                                                        FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                                                                                <Button x:Name="PART_HeaderButton" Grid.Column="1" Style="{StaticResource HistoryCalendarNav}"
+                                                                                        FontWeight="SemiBold" FontSize="13"/>
+                                                                                <Button x:Name="PART_NextButton" Grid.Column="2" Style="{StaticResource HistoryCalendarNav}" Content="&#xE76C;"
+                                                                                        FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                                                                            </Grid>
+                                                                            <Grid x:Name="PART_MonthView" Grid.Row="1" HorizontalAlignment="Center">
+                                                                                <Grid.ColumnDefinitions>
+                                                                                    <ColumnDefinition Width="32"/><ColumnDefinition Width="32"/><ColumnDefinition Width="32"/>
+                                                                                    <ColumnDefinition Width="32"/><ColumnDefinition Width="32"/><ColumnDefinition Width="32"/>
+                                                                                    <ColumnDefinition Width="32"/>
+                                                                                </Grid.ColumnDefinitions>
+                                                                                <Grid.RowDefinitions>
+                                                                                    <RowDefinition Height="24"/><RowDefinition Height="26"/><RowDefinition Height="26"/>
+                                                                                    <RowDefinition Height="26"/><RowDefinition Height="26"/><RowDefinition Height="26"/>
+                                                                                    <RowDefinition Height="26"/>
+                                                                                </Grid.RowDefinitions>
+                                                                            </Grid>
+                                                                            <Grid x:Name="PART_YearView" Grid.Row="1" Visibility="Hidden" HorizontalAlignment="Center">
+                                                                                <Grid.ColumnDefinitions>
+                                                                                    <ColumnDefinition Width="56"/><ColumnDefinition Width="56"/>
+                                                                                    <ColumnDefinition Width="56"/><ColumnDefinition Width="56"/>
+                                                                                </Grid.ColumnDefinitions>
+                                                                                <Grid.RowDefinitions>
+                                                                                    <RowDefinition Height="40"/><RowDefinition Height="40"/><RowDefinition Height="40"/>
+                                                                                </Grid.RowDefinitions>
+                                                                            </Grid>
+                                                                        </Grid>
+                                                                    </Border>
+                                                                </Grid>
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                </Style>
+                                <Style x:Key="HistoryDateText" TargetType="DatePickerTextBox">
+                                    <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                                    <Setter Property="CaretBrush" Value="{StaticResource Text}"/>
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                    <Setter Property="Padding" Value="8,0,0,0"/>
+                                    <Setter Property="VerticalContentAlignment" Value="Center"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="DatePickerTextBox">
+                                                <Grid>
+                                                    <TextBlock x:Name="Watermark" Text="选择日期" Foreground="{StaticResource Muted}"
+                                                               Margin="8,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed"/>
+                                                    <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center"/>
+                                                </Grid>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="Text" Value="{x:Null}">
+                                                        <Setter TargetName="Watermark" Property="Visibility" Value="Visible"/>
+                                                    </Trigger>
+                                                    <Trigger Property="Text" Value="">
+                                                        <Setter TargetName="Watermark" Property="Visibility" Value="Visible"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                                <Style x:Key="HistoryCalendar" TargetType="Calendar">
+                                    <Setter Property="Background" Value="{StaticResource Surface}"/>
+                                    <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                    <Setter Property="CalendarDayButtonStyle" Value="{StaticResource HistoryCalendarDay}"/>
+                                    <Setter Property="CalendarButtonStyle" Value="{StaticResource HistoryCalendarMonth}"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="Calendar">
+                                                <StackPanel x:Name="PART_Root">
+                                                    <CalendarItem x:Name="PART_CalendarItem" Style="{StaticResource HistoryCalendarItem}"
+                                                                  Background="{StaticResource Surface}" BorderThickness="0"/>
+                                                </StackPanel>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                                <Style x:Key="HistoryDate" TargetType="DatePicker">
+                                    <Setter Property="Width" Value="132"/>
+                                    <Setter Property="MinHeight" Value="34"/>
+                                    <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                                    <Setter Property="Background" Value="{StaticResource Input}"/>
+                                    <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
+                                    <Setter Property="CalendarStyle" Value="{StaticResource HistoryCalendar}"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="DatePicker">
+                                                <Grid x:Name="PART_Root">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="30"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Border x:Name="Frame" Grid.ColumnSpan="2" Background="{StaticResource Input}"
+                                                            BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6"/>
+                                                    <DatePickerTextBox x:Name="PART_TextBox" Style="{StaticResource HistoryDateText}"/>
+                                                    <Button x:Name="PART_Button" Grid.Column="1" Focusable="False" Cursor="Hand"
+                                                            MinHeight="0" Padding="0" Width="30">
+                                                        <Button.Template>
+                                                            <ControlTemplate TargetType="Button">
+                                                                <Border Background="Transparent">
+                                                                    <TextBlock Text="&#xE787;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                                               Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                </Border>
+                                                            </ControlTemplate>
+                                                        </Button.Template>
+                                                    </Button>
+                                                    <Popup x:Name="PART_Popup" Placement="Bottom" StaysOpen="False" AllowsTransparency="True">
+                                                        <Calendar x:Name="PART_Calendar" Style="{StaticResource HistoryCalendar}"
+                                                                  SelectedDate="{Binding SelectedDate, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                                                  DisplayDate="{Binding DisplayDate, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"/>
+
+                                                    </Popup>
+                                                </Grid>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Frame" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                                        <Setter TargetName="Frame" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsEnabled" Value="False">
+                                                        <Setter TargetName="Frame" Property="Opacity" Value=".45"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                                <Style x:Key="HistoryVerdict" TargetType="TextBlock">
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                    <Setter Property="Margin" Value="8,0,0,0"/>
+                                </Style>
+                            </Grid.Resources>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="*"/>
-                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
-                            <Border Style="{StaticResource Panel}" Margin="0,0,0,12" Padding="12">
-                                <DockPanel>
-                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="10,0,0,0">
-                                        <Button Content="查询" Click="Query_Click" IsEnabled="{Binding NotBusy}" Style="{StaticResource Primary}" Margin="0,0,7,0"/>
-                                        <Button Content="导出 CSV" Click="Export_Click" IsEnabled="{Binding NotBusy}" Margin="0,0,7,0"/>
-                                        <Button Content="删除选中" Click="DeleteHistory_Click" IsEnabled="{Binding CanDelete}"/>
+                            <Border Style="{StaticResource Panel}" Margin="0,0,0,12" Padding="12,10">
+                                <DockPanel LastChildFill="True">
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                                        <TextBlock Text="{Binding HistoryCount}" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                        <Button Content="导出 CSV" Click="Export_Click" IsEnabled="{Binding NotBusy}" MinHeight="34" Padding="12,6"/>
+                                        <Button Content="删除选中" Click="DeleteHistory_Click" Margin="8,0,0,0" MinHeight="34" Padding="12,6">
+                                            <Button.Visibility>
+                                                <MultiBinding Converter="{StaticResource DeleteWhenSelected}">
+                                                    <Binding Path="CanDelete"/>
+                                                    <Binding ElementName="HistoryGrid" Path="SelectedItem"/>
+                                                </MultiBinding>
+                                            </Button.Visibility>
+                                        </Button>
                                     </StackPanel>
-                                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
-                                        <TextBlock Text="日期" Style="{StaticResource MutedText}" Margin="0,0,8,0"/>
-                                        <DatePicker x:Name="DateFrom" Width="127" DateValidationError="DateValidation_Error" AutomationProperties.Name="开始日期"/>
-                                        <TextBlock Text="至" Style="{StaticResource MutedText}" Margin="7,0"/>
-                                        <DatePicker x:Name="DateTo" Width="127" DateValidationError="DateValidation_Error" AutomationProperties.Name="结束日期"/>
-                                        <TextBlock Text="条码" Style="{StaticResource MutedText}" Margin="11,0,8,0"/>
-                                    </StackPanel>
-                                    <TextBox x:Name="BarcodeFilter" KeyDown="BarcodeFilter_KeyDown" MinWidth="65" AutomationProperties.Name="扫码信息筛选"/>
+                                    <WrapPanel VerticalAlignment="Center">
+                                        <TextBlock Text="日期" Style="{StaticResource MutedText}" Margin="0,4,8,4"/>
+                                        <DatePicker x:Name="DateFrom" Style="{StaticResource HistoryDate}" Margin="0,4,0,4"
+                                                    DateValidationError="DateValidation_Error" AutomationProperties.Name="开始日期"/>
+                                        <TextBlock Text="至" Style="{StaticResource MutedText}" Margin="8,4"/>
+                                        <DatePicker x:Name="DateTo" Style="{StaticResource HistoryDate}" Margin="0,4,12,4"
+                                                    DateValidationError="DateValidation_Error" AutomationProperties.Name="结束日期"/>
+                                        <TextBlock Text="条码" Style="{StaticResource MutedText}" Margin="0,4,8,4"/>
+                                        <TextBox x:Name="BarcodeFilter" KeyDown="BarcodeFilter_KeyDown" Width="160" Margin="0,4,12,4"
+                                                 AutomationProperties.Name="扫码信息筛选"/>
+                                        <TextBlock Text="总判定" Style="{StaticResource MutedText}" Margin="0,4,8,4"/>
+                                        <ComboBox x:Name="ResultFilter" Width="96" SelectedIndex="0" SelectedValuePath="Tag" Margin="0,4,12,4"
+                                                  AutomationProperties.Name="总判定筛选">
+                                            <ComboBoxItem Content="全部"/>
+                                            <ComboBoxItem Content="合格" Tag="{x:Static local:Verdict.Pass}"/>
+                                            <ComboBoxItem Content="不合格" Tag="{x:Static local:Verdict.Fail}"/>
+                                        </ComboBox>
+                                        <Button Content="查询" Click="Query_Click" IsEnabled="{Binding NotBusy}" Style="{StaticResource Primary}"
+                                                MinHeight="34" Padding="16,6" Margin="0,4,0,4"/>
+                                    </WrapPanel>
                                 </DockPanel>
                             </Border>
                             <Border Grid.Row="1" Style="{StaticResource Panel}" Padding="0">
                                 <Grid>
                                     <DataGrid x:Name="HistoryGrid" ItemsSource="{Binding Records}" CanUserReorderColumns="False"
-                                              ScrollViewer.HorizontalScrollBarVisibility="Visible">
+                                              ScrollViewer.HorizontalScrollBarVisibility="Auto">
                                         <DataGrid.Resources>
                                             <Style x:Key="HistoryScrollTrackButton" TargetType="RepeatButton">
                                                 <Setter Property="Focusable" Value="False"/>
@@ -748,38 +1027,134 @@
                                             </Style>
                                         </DataGrid.Resources>
                                         <DataGrid.Columns>
-                                        <DataGridTextColumn Header="二维码" Width="205" Binding="{Binding Test.Barcode}">
-                                            <DataGridTextColumn.CellStyle>
-                                                <Style TargetType="DataGridCell" BasedOn="{StaticResource {x:Type DataGridCell}}">
-                                                    <Setter Property="ToolTip" Value="{Binding Test.Barcode}"/>
-                                                </Style>
-                                            </DataGridTextColumn.CellStyle>
-                                        </DataGridTextColumn>
-                                        <DataGridTextColumn Header="时间" Width="164" Binding="{Binding DisplayTime}" SortMemberPath="Time"/>
-                                        <DataGridTextColumn Header="正常电压" Width="96" Binding="{Binding Test.NormalVoltage, StringFormat={}0.00, TargetNullValue=—}"/>
-                                        <DataGridTextColumn Header="地刷灯亮判定" Width="120" Binding="{Binding Test.BrushLightVerdict, Converter={StaticResource Verdict}}"/>
-                                        <DataGridTextColumn Header="正常电流" Width="96" Binding="{Binding Test.NormalCurrent, StringFormat={}0.00, TargetNullValue=—}"/>
-                                        <DataGridTextColumn Header="正常电流判定结果" Width="150" Binding="{Binding Test.NormalCurrentVerdict, Converter={StaticResource Verdict}}"/>
-                                        <DataGridTextColumn Header="正常功率" Width="96" Binding="{Binding Test.NormalPower, StringFormat={}0.00, TargetNullValue=—}"/>
-                                        <DataGridTextColumn Header="正常功率判定结果" Width="150" Binding="{Binding Test.NormalPowerVerdict, Converter={StaticResource Verdict}}"/>
-                                        <DataGridTextColumn Header="正常转速" Width="104" Binding="{Binding Test.NormalSpeed, TargetNullValue=—}"/>
-                                        <DataGridTextColumn Header="正常转速判定结果" Width="150" Binding="{Binding Test.NormalSpeedVerdict, Converter={StaticResource Verdict}}"/>
-                                        <DataGridTextColumn Header="转速方向判定结果" Width="150" Binding="{Binding Test.DirectionVerdict, Converter={StaticResource Verdict}}"/>
-                                        <DataGridTextColumn Header="地刷灯灭判定" Width="120" Binding="{Binding Test.BrushLightOffVerdict, Converter={StaticResource Verdict}}"/>
-                                        <DataGridTextColumn Header="灰尘测试电流" Width="120" Binding="{Binding Test.DustCurrent, StringFormat={}0.00, TargetNullValue=—}"/>
-                                        <DataGridTextColumn Header="灰尘电流判定结果" Width="150" Binding="{Binding Test.DustCurrentVerdict, Converter={StaticResource Verdict}}"/>
-                                        <DataGridTextColumn Header="灰尘测试功率" Width="120" Binding="{Binding Test.DustPower, StringFormat={}0.00, TargetNullValue=—}"/>
-                                        <DataGridTextColumn Header="灰尘功率判定结果" Width="150" Binding="{Binding Test.DustPowerVerdict, Converter={StaticResource Verdict}}"/>
-                                        <DataGridTextColumn Header="灰尘测试转速" Width="120" Binding="{Binding Test.DustSpeed, TargetNullValue=—}"/>
-                                        <DataGridTextColumn Header="灰尘转速判定结果" Width="150" Binding="{Binding Test.DustSpeedVerdict, Converter={StaticResource Verdict}}"/>
-                                        <DataGridTextColumn Header="总判定结果" Width="112" Binding="{Binding Test.Result, Converter={StaticResource Verdict}}"/>
+                                            <DataGridTextColumn Header="时间" Width="164" Binding="{Binding DisplayTime}" SortMemberPath="Time"/>
+                                            <DataGridTextColumn Header="二维码" Width="180" Binding="{Binding Test.Barcode}">
+                                                <DataGridTextColumn.CellStyle>
+                                                    <Style TargetType="DataGridCell" BasedOn="{StaticResource {x:Type DataGridCell}}">
+                                                        <Setter Property="ToolTip" Value="{Binding Test.Barcode}"/>
+                                                    </Style>
+                                                </DataGridTextColumn.CellStyle>
+                                            </DataGridTextColumn>
+                                            <DataGridTextColumn Header="产品型号" Width="120" Binding="{Binding Test.Model, TargetNullValue=—}"/>
+                                            <DataGridTemplateColumn Header="总判定" Width="88" SortMemberPath="Test.Result">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock FontWeight="SemiBold"
+                                                                   Text="{Binding Test.Result, Converter={StaticResource Verdict}}"
+                                                                   Foreground="{Binding Test.Result, Converter={StaticResource Verdict}}"/>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                            <DataGridTextColumn Header="正常电压" Width="96" Binding="{Binding Test.NormalVoltage, StringFormat={}0.00, TargetNullValue=—}"/>
+                                            <DataGridTemplateColumn Header="正常电流" Width="132" SortMemberPath="Test.NormalCurrent">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Test.NormalCurrent, StringFormat={}{0:0.00}, TargetNullValue=—}"/>
+                                                            <TextBlock Style="{StaticResource HistoryVerdict}"
+                                                                       Text="{Binding Test.NormalCurrentVerdict, Converter={StaticResource Verdict}}"
+                                                                       Foreground="{Binding Test.NormalCurrentVerdict, Converter={StaticResource Verdict}}"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                            <DataGridTemplateColumn Header="正常功率" Width="132" SortMemberPath="Test.NormalPower">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Test.NormalPower, StringFormat={}{0:0.00}, TargetNullValue=—}"/>
+                                                            <TextBlock Style="{StaticResource HistoryVerdict}"
+                                                                       Text="{Binding Test.NormalPowerVerdict, Converter={StaticResource Verdict}}"
+                                                                       Foreground="{Binding Test.NormalPowerVerdict, Converter={StaticResource Verdict}}"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                            <DataGridTemplateColumn Header="正常转速" Width="128" SortMemberPath="Test.NormalSpeed">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Test.NormalSpeed, TargetNullValue=—}"/>
+                                                            <TextBlock Style="{StaticResource HistoryVerdict}"
+                                                                       Text="{Binding Test.NormalSpeedVerdict, Converter={StaticResource Verdict}}"
+                                                                       Foreground="{Binding Test.NormalSpeedVerdict, Converter={StaticResource Verdict}}"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                            <DataGridTemplateColumn Header="地刷灯亮" Width="88" SortMemberPath="Test.BrushLightVerdict">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock FontWeight="SemiBold"
+                                                                   Text="{Binding Test.BrushLightVerdict, Converter={StaticResource Verdict}}"
+                                                                   Foreground="{Binding Test.BrushLightVerdict, Converter={StaticResource Verdict}}"/>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                            <DataGridTemplateColumn Header="地刷灯灭" Width="88" SortMemberPath="Test.BrushLightOffVerdict">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock FontWeight="SemiBold"
+                                                                   Text="{Binding Test.BrushLightOffVerdict, Converter={StaticResource Verdict}}"
+                                                                   Foreground="{Binding Test.BrushLightOffVerdict, Converter={StaticResource Verdict}}"/>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                            <DataGridTemplateColumn Header="转向" Width="80" SortMemberPath="Test.DirectionVerdict">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock FontWeight="SemiBold"
+                                                                   Text="{Binding Test.DirectionVerdict, Converter={StaticResource Verdict}}"
+                                                                   Foreground="{Binding Test.DirectionVerdict, Converter={StaticResource Verdict}}"/>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                            <DataGridTemplateColumn Header="灰尘电流" Width="132" SortMemberPath="Test.DustCurrent">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Test.DustCurrent, StringFormat={}{0:0.00}, TargetNullValue=—}"/>
+                                                            <TextBlock Style="{StaticResource HistoryVerdict}"
+                                                                       Text="{Binding Test.DustCurrentVerdict, Converter={StaticResource Verdict}}"
+                                                                       Foreground="{Binding Test.DustCurrentVerdict, Converter={StaticResource Verdict}}"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                            <DataGridTemplateColumn Header="灰尘功率" Width="132" SortMemberPath="Test.DustPower">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Test.DustPower, StringFormat={}{0:0.00}, TargetNullValue=—}"/>
+                                                            <TextBlock Style="{StaticResource HistoryVerdict}"
+                                                                       Text="{Binding Test.DustPowerVerdict, Converter={StaticResource Verdict}}"
+                                                                       Foreground="{Binding Test.DustPowerVerdict, Converter={StaticResource Verdict}}"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                            <DataGridTemplateColumn Header="灰尘转速" Width="128" SortMemberPath="Test.DustSpeed">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Test.DustSpeed, TargetNullValue=—}"/>
+                                                            <TextBlock Style="{StaticResource HistoryVerdict}"
+                                                                       Text="{Binding Test.DustSpeedVerdict, Converter={StaticResource Verdict}}"
+                                                                       Foreground="{Binding Test.DustSpeedVerdict, Converter={StaticResource Verdict}}"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
                                         </DataGrid.Columns>
                                     </DataGrid>
-                                    <TextBlock Text="没有符合条件的测试记录" Style="{StaticResource MutedText}" HorizontalAlignment="Center"
-                                               Visibility="{Binding HistoryEmpty, Converter={StaticResource VisibleWhen}}" IsHitTestVisible="False"/>
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                Visibility="{Binding HistoryEmpty, Converter={StaticResource VisibleWhen}}">
+                                        <TextBlock Text="没有符合条件的测试记录" Style="{StaticResource MutedText}" HorizontalAlignment="Center"/>
+                                        <Button Content="清空条件" Click="ClearHistoryFilter_Click" HorizontalAlignment="Center"
+                                                Margin="0,12,0,0" MinHeight="34" Padding="14,6"/>
+                                    </StackPanel>
                                 </Grid>
                             </Border>
-                            <TextBlock Grid.Row="2" Text="{Binding HistoryCount}" Style="{StaticResource MutedText}" Margin="0,10,0,0"/>
                         </Grid>
                     </TabItem>
                     <TabItem x:Name="HistoryAddressTab" Header="地址配置">
@@ -893,15 +1268,129 @@
             </Grid>
 
             <Grid x:Name="AccessPage" Visibility="Collapsed">
+                <Grid.Resources>
+                    <Style x:Key="RoleCard" TargetType="Border" BasedOn="{StaticResource Panel}">
+                        <Setter Property="Padding" Value="18,16"/>
+                        <Setter Property="Margin" Value="0,0,0,12"/>
+                    </Style>
+                    <Style x:Key="RoleChip" TargetType="Border">
+                        <Setter Property="Background" Value="{StaticResource Input}"/>
+                        <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
+                        <Setter Property="BorderThickness" Value="1"/>
+                        <Setter Property="CornerRadius" Value="10"/>
+                        <Setter Property="Padding" Value="8,2"/>
+                        <Setter Property="VerticalAlignment" Value="Center"/>
+                    </Style>
+                    <Style x:Key="Capability" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                        <Setter Property="TextWrapping" Value="Wrap"/>
+                        <Setter Property="Margin" Value="0,4,0,0"/>
+                    </Style>
+                </Grid.Resources>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
-                <TextBlock Text="权限管理" Style="{StaticResource Title}" Margin="0,0,0,14"/>
-                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                    <Border Style="{StaticResource Panel}" Width="450" Padding="23" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel Margin="0,0,0,14">
+                    <TextBlock Text="权限管理" Style="{StaticResource Title}"/>
+                    <TextBlock Text="未登录只能查看。管理员登录后才能修改配置、删除记录和操作实机。"
+                               Style="{StaticResource MutedText}" Margin="0,4,0,0"/>
+                </StackPanel>
+                <Grid Grid.Row="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.15*"/>
+                        <ColumnDefinition Width="16"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <Border>
+                            <Border.Style>
+                                <Style TargetType="Border" BasedOn="{StaticResource RoleCard}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsAdministrator}" Value="False">
+                                            <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,8">
+                                    <Border DockPanel.Dock="Right" Style="{StaticResource RoleChip}">
+                                        <TextBlock FontSize="12" FontWeight="SemiBold">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Text" Value="当前"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsAdministrator}" Value="True">
+                                                            <Setter Property="Text" Value="未使用"/>
+                                                            <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Border>
+                                    <TextBlock Text="未登录" FontSize="20" FontWeight="SemiBold"/>
+                                </DockPanel>
+                                <TextBlock Text="可以查看状态监控、历史记录、设备状态和联系信息。" Style="{StaticResource Capability}"/>
+                                <TextBlock Text="模拟模式下可以手动操作和运行测试。" Style="{StaticResource Capability}"/>
+                                <TextBlock Text="不能修改点位、配方和系统设置，也不能删除记录或写入 PLC。" Style="{StaticResource Capability}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border>
+                            <Border.Style>
+                                <Style TargetType="Border" BasedOn="{StaticResource RoleCard}">
+                                    <Setter Property="Margin" Value="0"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsAdministrator}" Value="True">
+                                            <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,8">
+                                    <Border DockPanel.Dock="Right" Style="{StaticResource RoleChip}">
+                                        <TextBlock FontSize="12" FontWeight="SemiBold">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Text" Value="未登录"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsAdministrator}" Value="True">
+                                                            <Setter Property="Text" Value="当前"/>
+                                                            <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Border>
+                                    <TextBlock Text="管理员" FontSize="20" FontWeight="SemiBold"/>
+                                </DockPanel>
+                                <TextBlock Text="编辑监控点位、检测开关和配方。测试运行中这些项会锁定。" Style="{StaticResource Capability}"/>
+                                <TextBlock Text="修改系统设置，并清零累计运行时间。" Style="{StaticResource Capability}"/>
+                                <TextBlock Text="删除历史记录。" Style="{StaticResource Capability}"/>
+                                <TextBlock Text="在 PLC 上手动控制，并写入读写测试的值。" Style="{StaticResource Capability}"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                    <Border Grid.Column="2" Style="{StaticResource Panel}" Padding="22,20" VerticalAlignment="Top">
                         <StackPanel>
-                            <TextBlock Text="{Binding OperatorLabel}" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,16"/>
+                            <TextBlock FontSize="22" FontWeight="SemiBold">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="管理员登录"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsAdministrator}" Value="True">
+                                                <Setter Property="Text" Value="{Binding OperatorLabel}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <TextBlock Text="登录状态只保存在本次运行中，关闭程序后需要重新登录。"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,6,0,16"/>
                             <StackPanel>
                                 <StackPanel.Style>
                                     <Style TargetType="StackPanel">
@@ -915,19 +1404,24 @@
                                 <Label Content="用户名" Target="{Binding ElementName=LoginUserName}" Foreground="{StaticResource Text}" Padding="0,0,0,5"/>
                                 <TextBox x:Name="LoginUserName" Text="{x:Static local:StationView.AdministratorName}" IsReadOnly="True"
                                          IsTabStop="False" AutomationProperties.Name="用户名"/>
+                                <TextBlock Text="固定管理员账号，不能在这里修改。" Style="{StaticResource MutedText}" FontSize="12" Margin="0,4,0,0"/>
                                 <Label Content="密码" Target="{Binding ElementName=LoginPassword}" Foreground="{StaticResource Text}"
-                                       Padding="0,0,0,5" Margin="0,12,0,0"/>
+                                       Padding="0,0,0,5" Margin="0,14,0,0"/>
                                 <PasswordBox x:Name="LoginPassword" MaxLength="128" IsEnabled="{Binding NotBusy}"
                                              AutomationProperties.Name="密码" KeyDown="LoginField_KeyDown"/>
                                 <TextBlock x:Name="LoginError" Foreground="{StaticResource Red}" TextWrapping="Wrap" Visibility="Collapsed" Margin="0,9,0,0"/>
                                 <Button Content="登录" Click="Login_Click" IsEnabled="{Binding NotBusy}"
-                                        Style="{StaticResource Primary}" Margin="0,13,0,0"/>
+                                        Style="{StaticResource Primary}" Margin="0,16,0,0" HorizontalAlignment="Stretch"/>
                             </StackPanel>
-                            <Button Content="退出登录" Click="Logout_Click" IsEnabled="{Binding CanLogout}"
-                                    Visibility="{Binding IsAdministrator, Converter={StaticResource VisibleWhen}}"/>
+                            <StackPanel Visibility="{Binding IsAdministrator, Converter={StaticResource VisibleWhen}}">
+                                <TextBlock Text="现在可以修改被锁定的配置，并操作实机。系统忙碌时不能退出。"
+                                           Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
+                                <Button Content="退出登录" Click="Logout_Click" IsEnabled="{Binding CanLogout}" Margin="0,16,0,0"
+                                        HorizontalAlignment="Left"/>
+                            </StackPanel>
                         </StackPanel>
                     </Border>
-                </ScrollViewer>
+                </Grid>
             </Grid>
             <local:DeviceManagement x:Name="DevicesPage" Visibility="Collapsed"/>
 
@@ -965,25 +1459,27 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
-                <DockPanel Margin="0,0,0,16">
-                    <Border DockPanel.Dock="Right" Background="{StaticResource Raised}" BorderBrush="{StaticResource Line}"
-                            BorderThickness="1" CornerRadius="6" Padding="12,6" VerticalAlignment="Top" Margin="16,3,0,0">
-                        <TextBlock Foreground="{StaticResource Muted}" FontSize="12">
+                <DockPanel Margin="0,0,0,12">
+                    <Border DockPanel.Dock="Right" Background="{StaticResource Input}" BorderBrush="{StaticResource Line}"
+                            BorderThickness="1" CornerRadius="12" Padding="10,4" VerticalAlignment="Center" Margin="16,0,0,0">
+                        <TextBlock FontSize="12" FontWeight="SemiBold">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
-                                    <Setter Property="Text" Value="只读浏览"/>
+                                    <Setter Property="Text" Value="只读"/>
+                                    <Setter Property="Foreground" Value="{StaticResource Muted}"/>
                                     <Style.Triggers>
                                         <DataTrigger Binding="{Binding IsAdministrator}" Value="True">
                                             <Setter Property="Text" Value="管理员"/>
+                                            <Setter Property="Foreground" Value="{StaticResource Accent}"/>
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
                             </TextBlock.Style>
                         </TextBlock>
                     </Border>
-                    <StackPanel>
+                    <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="系统设置" Style="{StaticResource Title}"/>
-                        <TextBlock Text="统计与扫码分组独立保存，配置保存在本机数据目录。" Style="{StaticResource SystemHint}"/>
+                        <TextBlock Text="运行统计和扫码写回分开保存，配置放在本机数据目录。" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
                     </StackPanel>
                 </DockPanel>
                 <ScrollViewer x:Name="SystemSettingsScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto"
@@ -991,7 +1487,7 @@
                     <StackPanel>
                         <Border x:Name="SystemReadOnlyNotice" Background="{StaticResource Raised}"
                                 BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8"
-                                Padding="14,10" Margin="0,0,0,14">
+                                Padding="12,8" Margin="0,0,0,12">
                             <Border.Style>
                                 <Style TargetType="Border">
                                     <Style.Triggers>
@@ -1003,119 +1499,127 @@
                             </Border.Style>
                             <DockPanel>
                                 <Button DockPanel.Dock="Right" Content="前往权限管理" Click="Navigate_Click" CommandParameter="5"
-                                        IsEnabled="{Binding NotBusy}" Margin="16,0,0,0" Padding="12,5" MinHeight="32"/>
-                                <StackPanel>
-                                    <TextBlock Text="当前为只读模式" FontWeight="SemiBold" Foreground="{StaticResource Accent}"/>
-                                    <TextBlock Text="登录管理员后可修改地址、保存设置或清零累计时间。" Style="{StaticResource SystemHint}"/>
-                                </StackPanel>
+                                        IsEnabled="{Binding NotBusy}" Margin="16,0,0,0" Padding="12,4" MinHeight="32"/>
+                                <TextBlock Text="当前为只读。登录管理员后可修改地址、保存设置或清零累计时间。"
+                                           VerticalAlignment="Center" TextWrapping="Wrap"/>
                             </DockPanel>
                         </Border>
                         <Grid x:Name="SystemSettingsCards">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="0.95*"/>
-                                <ColumnDefinition Width="16"/>
-                                <ColumnDefinition Width="1.65*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="14"/>
+                                <ColumnDefinition Width="1.35*"/>
                             </Grid.ColumnDefinitions>
-                            <Border x:Name="RuntimeSettingsCard" Style="{StaticResource Panel}" Padding="20" VerticalAlignment="Top">
+                            <Border x:Name="RuntimeSettingsCard" Style="{StaticResource Panel}" Padding="16" VerticalAlignment="Top">
                                 <StackPanel>
-                                    <TextBlock Text="运行时间统计" Style="{StaticResource Section}"/>
-                                    <TextBlock Text="按运行线圈状态累计设备运行时长。" Style="{StaticResource SystemHint}" Margin="0,5,0,16"/>
-                                    <Border Background="{StaticResource Raised}" CornerRadius="6" Padding="14" Margin="0,0,0,18">
+                                    <DockPanel Margin="0,0,0,12" LastChildFill="False">
+                                        <WrapPanel DockPanel.Dock="Right" VerticalAlignment="Center">
+                                            <Button Content="累计时间清零" Click="ResetRuntime_Click" IsEnabled="{Binding CanEditSystemSettings}"
+                                                    Foreground="{StaticResource Red}" Padding="10,5" MinHeight="32" Margin="0,0,8,0"/>
+                                            <Button Content="保存" Click="SaveRuntimeSettings_Click" IsEnabled="{Binding CanEditSystemSettings}"
+                                                    Style="{StaticResource Primary}" Padding="14,5" MinHeight="32"
+                                                    AutomationProperties.Name="保存统计设置"/>
+                                        </WrapPanel>
+                                        <StackPanel>
+                                            <TextBlock Text="运行时间统计" Style="{StaticResource Section}"/>
+                                            <TextBlock Text="按运行线圈累计时长" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                    <Border Background="{StaticResource Raised}" CornerRadius="8" Padding="14,12" Margin="0,0,0,14">
                                         <StackPanel>
                                             <TextBlock Text="累计运行时间" Style="{StaticResource MutedText}" FontSize="12"/>
-                                            <TextBlock Text="{Binding RuntimeLabel}" FontFamily="Consolas" FontSize="32"
-                                                       FontWeight="SemiBold" Foreground="{StaticResource Accent}" Margin="0,6,0,0"/>
+                                            <TextBlock Text="{Binding RuntimeLabel}" FontFamily="Consolas" FontSize="30"
+                                                       FontWeight="SemiBold" Foreground="{StaticResource Accent}" Margin="0,4,0,0"/>
                                             <TextBlock Text="{Binding RuntimeStatus}" Style="{StaticResource SystemHint}"/>
                                         </StackPanel>
                                     </Border>
                                     <Label Content="运行状态线圈地址" Target="{Binding ElementName=RuntimeAddress}"
-                                           Style="{StaticResource SystemFieldLabel}" Margin="0,0,0,7"/>
+                                           Style="{StaticResource SystemFieldLabel}" Margin="0,0,0,6"/>
                                     <TextBox x:Name="RuntimeAddress" MaxLength="6" Style="{StaticResource SystemField}"
                                              AutomationProperties.Name="运行状态线圈地址"/>
-                                    <TextBlock Text="例如 M10、Y10、X0、S0、HM0 或零基十进制地址；留空停用统计。"
+                                    <TextBlock Text="例如 M10、Y10、X0、S0、HM0 或零基十进制地址。留空则停用统计，已累计的时间会保留。"
                                                Style="{StaticResource SystemHint}"/>
                                     <TextBlock x:Name="RuntimeSettingsError" Text="" Style="{StaticResource SystemError}"/>
-                                    <Border Background="{StaticResource Input}" CornerRadius="6" Padding="12" Margin="0,16,0,0">
+                                    <Border Background="{StaticResource Input}" CornerRadius="8" Padding="12,10" Margin="0,12,0,0">
                                         <StackPanel>
                                             <TextBlock Text="计时规则" FontWeight="SemiBold" FontSize="12"/>
-                                            <TextBlock Text="线圈为 1 时累加，为 0 时暂停。通讯中断与模拟模式不计时，停用统计不会删除累计值。"
+                                            <TextBlock Text="线圈为 1 时累加，为 0 时暂停。通讯中断和模拟模式不计时。"
                                                        Style="{StaticResource SystemHint}"/>
                                         </StackPanel>
                                     </Border>
-                                    <WrapPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
-                                        <Button Content="累计时间清零" Click="ResetRuntime_Click" IsEnabled="{Binding CanEditSystemSettings}"
-                                                Foreground="{StaticResource Red}" Padding="12,7" Margin="0,0,8,0"/>
-                                        <Button Content="保存统计设置" Click="SaveRuntimeSettings_Click" IsEnabled="{Binding CanEditSystemSettings}"
-                                                Style="{StaticResource Primary}" Padding="12,7"/>
-                                    </WrapPanel>
                                 </StackPanel>
                             </Border>
-                            <Border x:Name="ScannerSettingsCard" Grid.Column="2" Style="{StaticResource Panel}" Padding="20" VerticalAlignment="Top">
+                            <Border x:Name="ScannerSettingsCard" Grid.Column="2" Style="{StaticResource Panel}" Padding="16" VerticalAlignment="Top">
                                 <StackPanel>
-                                    <TextBlock Text="扫码触发与写回" Style="{StaticResource Section}"/>
-                                    <TextBlock Text="触发扫码 → 按配方比对 → 写回 PLC → 清零触发" Style="{StaticResource SystemHint}" Margin="0,5,0,18"/>
+                                    <DockPanel Margin="0,0,0,12">
+                                        <Button DockPanel.Dock="Right" Content="保存" Click="SaveScannerSettings_Click"
+                                                IsEnabled="{Binding CanEditSystemSettings}" Style="{StaticResource Primary}"
+                                                Padding="14,5" MinHeight="32" VerticalAlignment="Center"
+                                                AutomationProperties.Name="保存扫码设置"/>
+                                        <StackPanel>
+                                            <TextBlock Text="扫码触发与写回" Style="{StaticResource Section}"/>
+                                            <TextBlock Text="触发扫码 → 按配方比对 → 写回 PLC → 清零触发" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                    </DockPanel>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="180"/>
+                                            <ColumnDefinition Width="168"/>
                                         </Grid.ColumnDefinitions>
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
-                                        <StackPanel Margin="0,0,16,14">
+                                        <StackPanel Margin="0,0,14,10">
                                             <Label Content="扫码触发线圈" Target="{Binding ElementName=ScannerTriggerAddress}"
                                                    Style="{StaticResource SystemFieldLabel}"/>
-                                            <TextBlock Text="默认 Y11，留空停用触发" Style="{StaticResource SystemHint}"/>
+                                            <TextBlock Text="默认 Y11，留空停用触发" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
                                         </StackPanel>
                                         <TextBox x:Name="ScannerTriggerAddress" Grid.Column="1" MaxLength="12"
-                                                 Style="{StaticResource SystemField}" VerticalAlignment="Top" Margin="0,0,0,14"
+                                                 Style="{StaticResource SystemField}" VerticalAlignment="Center" Margin="0,0,0,10"
                                                  AutomationProperties.Name="扫码触发线圈地址"/>
-                                        <StackPanel Grid.Row="1" Margin="0,0,16,14">
+                                        <StackPanel Grid.Row="1" Margin="0,0,14,10">
                                             <Label Content="二维码写回地址" Target="{Binding ElementName=ScannerBarcodeAddress}"
                                                    Style="{StaticResource SystemFieldLabel}"/>
-                                            <TextBlock Text="默认 D4000，连续 32 字 / 64 字节" Style="{StaticResource SystemHint}"/>
+                                            <TextBlock Text="默认 D4000，连续 32 字 / 64 字节" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
                                         </StackPanel>
                                         <TextBox x:Name="ScannerBarcodeAddress" Grid.Row="1" Grid.Column="1" MaxLength="8"
-                                                 Style="{StaticResource SystemField}" VerticalAlignment="Top" Margin="0,0,0,14"
+                                                 Style="{StaticResource SystemField}" VerticalAlignment="Center" Margin="0,0,0,10"
                                                  AutomationProperties.Name="二维码存储寄存器地址"/>
-                                        <StackPanel Grid.Row="2" Margin="0,0,16,0">
+                                        <StackPanel Grid.Row="2" Margin="0,0,14,0">
                                             <Label Content="比对结果写回地址" Target="{Binding ElementName=ScannerVerdictAddress}"
                                                    Style="{StaticResource SystemFieldLabel}"/>
-                                            <TextBlock Text="默认 D379，单个保持寄存器" Style="{StaticResource SystemHint}"/>
+                                            <TextBlock Text="默认 D379，单个保持寄存器" Style="{StaticResource SystemHint}" Margin="0,2,0,0"/>
                                         </StackPanel>
                                         <TextBox x:Name="ScannerVerdictAddress" Grid.Row="2" Grid.Column="1" MaxLength="8"
-                                                 Style="{StaticResource SystemField}" VerticalAlignment="Top"
+                                                 Style="{StaticResource SystemField}" VerticalAlignment="Center"
                                                  AutomationProperties.Name="扫码比对结果寄存器地址"/>
                                     </Grid>
                                     <TextBlock x:Name="ScannerSettingsError" Text="" Style="{StaticResource SystemError}"/>
-                                    <Border Background="{StaticResource Input}" CornerRadius="6" Padding="12" Margin="0,18,0,0">
+                                    <Border Background="{StaticResource Input}" CornerRadius="8" Padding="12,10" Margin="0,12,0,0">
                                         <StackPanel>
                                             <WrapPanel>
-                                                <TextBlock Text="1 · 匹配" Foreground="{StaticResource Green}" FontWeight="SemiBold" Margin="0,0,20,0"/>
+                                                <TextBlock Text="1 · 匹配" Foreground="{StaticResource Green}" FontWeight="SemiBold" Margin="0,0,18,0"/>
                                                 <TextBlock Text="2 · 不匹配" Foreground="{StaticResource Red}" FontWeight="SemiBold"/>
                                             </WrapPanel>
-                                            <TextBlock Text="二维码与比对结果均写入成功后才清零触发。写回失败会重试同一条码，不重复扫码。"
+                                            <TextBlock Text="两条都写入成功后才清零触发。写回失败会重试同一条码，不会重新扫码。"
                                                        Style="{StaticResource SystemHint}"/>
                                         </StackPanel>
                                     </Border>
-                                    <Expander x:Name="ScannerSettingsHelp" Header="查看二维码比对与编码说明" IsExpanded="False"
-                                              Foreground="{StaticResource Muted}" FontSize="12" Margin="0,14,0,0">
-                                        <StackPanel Margin="6,10,6,0">
+                                    <Expander x:Name="ScannerSettingsHelp" Header="二维码比对与编码" IsExpanded="False"
+                                              Foreground="{StaticResource Muted}" FontSize="12" Margin="0,10,0,0">
+                                        <StackPanel Margin="2,8,2,0">
                                             <TextBlock Text="{Binding ActiveRecipeLabel, StringFormat=当前启用配方：{0}}"
                                                        Foreground="{StaticResource Text}" TextWrapping="Wrap"/>
                                             <TextBlock Text="{Binding ActiveRecipe.Model, StringFormat=产品型号：{0}}"
                                                        Style="{StaticResource SystemHint}"/>
-                                            <TextBlock Text="从开始序号（从 1 开始）截取对比长度，与完整产品型号区分大小写比较；对比长度为 0 时采用产品型号长度。"
+                                            <TextBlock Text="从开始序号（从 1 开始）截取对比长度，与完整产品型号区分大小写比较。对比长度为 0 时使用产品型号的长度。"
                                                        Style="{StaticResource SystemHint}"/>
-                                            <TextBlock Text="二维码采用 UTF-8 编码，每字高字节在前，不足补零。超过 64 字节会报错，不截断；扫码等待超时或通讯失败会提示并重试。"
+                                            <TextBlock Text="二维码按 UTF-8 写入，每字高字节在前，不足补零。超过 64 字节会报错，不截断。扫码超时或通讯失败会提示并重试。"
                                                        Style="{StaticResource SystemHint}"/>
                                         </StackPanel>
                                     </Expander>
-                                    <Button Content="保存扫码设置" Click="SaveScannerSettings_Click"
-                                            IsEnabled="{Binding CanEditSystemSettings}" Style="{StaticResource Primary}"
-                                            HorizontalAlignment="Right" Margin="0,18,0,0" Padding="14,7"/>
                                 </StackPanel>
                             </Border>
                         </Grid>

@@ -34,3 +34,16 @@ public sealed class VerdictConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
         Binding.DoNothing;
 }
+
+public sealed class HistoryDeleteVisibilityConverter : IMultiValueConverter
+{
+    public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
+    {
+        bool allowed = values.Length > 0 && values[0] is true;
+        bool selected = values.Length > 1 && values[1] is TestRecord;
+        return allowed && selected ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}

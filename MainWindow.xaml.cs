@@ -1280,7 +1280,13 @@ public partial class MainWindow : Window
         throw new InvalidOperationException("日期格式无效，请使用日历选择日期。");
     }
 
-    private IEnumerable<TestRecord> HistoryResults() => store.History(ReadDate(DateFrom), ReadDate(DateTo), BarcodeFilter.Text);
+    private IEnumerable<TestRecord> HistoryResults()
+    {
+        var records = store.History(ReadDate(DateFrom), ReadDate(DateTo), BarcodeFilter.Text);
+        return ResultFilter.SelectedValue is Verdict verdict
+            ? records.Where(record => record.Test.Result == verdict)
+            : records;
+    }
 
     private void RefreshHistory() => view.Records = HistoryResults().ToList();
 
@@ -1537,6 +1543,20 @@ public partial class MainWindow : Window
     }
 
     private async void Query_Click(object sender, RoutedEventArgs e) => await QueryAsync();
+
+    private async void ClearHistoryFilter_Click(object sender, RoutedEventArgs e)
+    {
+        DateFrom.SelectedDate = null;
+        DateTo.SelectedDate = null;
+        BarcodeFilter.Clear();
+        ResultFilter.SelectedIndex = 0;
+        await PerformAsync(() =>
+        {
+            RefreshHistory();
+            view.Notice = "已清空查询条件。";
+            return Task.CompletedTask;
+        });
+    }
     private async void BarcodeFilter_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter)
