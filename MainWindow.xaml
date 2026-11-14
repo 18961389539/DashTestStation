@@ -92,12 +92,16 @@
         </DataTemplate>
         <DataTemplate x:Key="ManualActionCard">
             <Grid Margin="0,0,0,9">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <Ellipse Width="8" Height="8" VerticalAlignment="Center" Margin="0,0,7,0"
+                <Ellipse Grid.Row="0" Width="8" Height="8" VerticalAlignment="Center" Margin="0,0,7,0"
                          ToolTip="{Binding State}" AutomationProperties.Name="{Binding State}">
                     <Ellipse.Style>
                         <Style TargetType="Ellipse">
@@ -113,7 +117,7 @@
                         </Style>
                     </Ellipse.Style>
                 </Ellipse>
-                <Button Grid.Column="1" Style="{StaticResource ManualCommand}"
+                <Button Grid.Row="0" Grid.Column="1" Style="{StaticResource ManualCommand}"
                         Content="{Binding Label}" ToolTip="{Binding Addresses}"
                         ToolTipService.ShowOnDisabled="True" AutomationProperties.HelpText="{Binding State}"
                         CommandParameter="{Binding Id}" AutomationProperties.Name="{Binding Label}"
@@ -122,10 +126,30 @@
                         LostMouseCapture="Manual_LostMouseCapture" PreviewKeyDown="Manual_KeyDown"
                         PreviewKeyUp="Manual_KeyUp" LostKeyboardFocus="Manual_LostKeyboardFocus"
                         Stylus.IsPressAndHoldEnabled="False"/>
-                <Button Grid.Column="2" Style="{StaticResource EditIcon}" VerticalAlignment="Center" Margin="7,0,0,0"
+                <Button Grid.Row="0" Grid.Column="2" Style="{StaticResource EditIcon}" VerticalAlignment="Center" Margin="7,0,0,0"
                         IsEnabled="{Binding DataContext.CanEditMonitorPoints, RelativeSource={RelativeSource AncestorType=Window}}"
                         CommandParameter="{Binding}" AutomationProperties.Name="{Binding Label, StringFormat=编辑{0}地址}"
                         Click="EditManualPoint_Click"/>
+                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Result}" TextWrapping="Wrap"
+                           Margin="0,4,0,0" FontSize="13" ToolTip="{Binding Result}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                            <Setter Property="Visibility" Value="Visible"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Result}" Value="">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding ResultState}" Value="pending">
+                                    <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding ResultState}" Value="error">
+                                    <Setter Property="Foreground" Value="{StaticResource Red}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
             </Grid>
         </DataTemplate>
     </Window.Resources>

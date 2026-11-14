@@ -61,6 +61,7 @@ public partial class MainWindow : Window
     private Task manualPress = Task.CompletedTask;
     private Task manualRelease = Task.CompletedTask;
     private bool manualReleasePending;
+    private int manualScanBusy;
     private CancellationTokenSource? pollCancellation;
     private Task polling = Task.CompletedTask;
     private Task recipeDispatch = Task.CompletedTask;
@@ -771,6 +772,8 @@ public partial class MainWindow : Window
         var id = (ManualPointId)button.CommandParameter;
         heldManualButton = button;
         heldManualKey = key;
+        if (id == ManualPointId.Scan)
+            StartManualScan();
         try
         {
             manualPress = station.SetManualAsync(id, true);
@@ -782,6 +785,38 @@ public partial class MainWindow : Window
             if (heldManualButton == button)
                 ReleaseHeldManual();
         }
+    }
+
+    private async void StartManualScan()
+    {
+        if (Interlocked.Exchange(ref manualScanBusy, 1) == 1)
+            return;
+        var action = view.ManualActions.First(item => item.Id == ManualPointId.Scan);
+        ShowManualScanResult(action, "扫码中…", "pending");
+        try
+        {
+            string barcode = await StationDevices.Scanner.ScanAsync(TimeSpan.FromSeconds(3), CancellationToken.None);
+            ShowManualScanResult(action, string.IsNullOrWhiteSpace(barcode) ? "未读到条码" : barcode,
+                string.IsNullOrWhiteSpace(barcode) ? "error" : "ok");
+        }
+        catch (Exception ex)
+        {
+            ShowManualScanResult(action, ex.Message, "error");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref manualScanBusy, 0);
+        }
+    }
+
+    private void ShowManualScanResult(ManualAction action, string text, string state)
+    {
+        if (closing)
+            return;
+        if (Dispatcher.CheckAccess())
+            action.ShowResult(text, state);
+        else
+            Dispatcher.Invoke(() => action.ShowResult(text, state));
     }
 
     private void ReleaseHeldManual()

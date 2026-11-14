@@ -194,10 +194,20 @@ public sealed class ManualAction(ManualPointId id) : Bindable
 {
     private ManualPoint point = ManualPoints.Default(id);
     private bool? feedback;
+    private string result = "";
+    private string resultState = "";
     public ManualPointId Id { get; } = id;
     public string Label => ManualPoints.Labels[(int)Id];
     public string Addresses => $"{PlcAddress.FormatCoil(point.WriteAddress)} → {PlcAddress.FormatCoil(point.FeedbackAddress)}";
     public bool? Feedback { get => feedback; set { if (Set(ref feedback, value)) Changed(nameof(State)); } }
     public string State => Feedback switch { true => "输出 ON", false => "输出 OFF", _ => "反馈未知" };
     public ManualPoint Point { get => point; set { if (Set(ref point, value)) Changed(nameof(Addresses)); } }
+    public string Result { get => result; private set => Set(ref result, value); }
+    public string ResultState { get => resultState; private set => Set(ref resultState, value); }
+
+    internal void ShowResult(string text, string state)
+    {
+        ResultState = state;
+        Result = text;
+    }
 }
