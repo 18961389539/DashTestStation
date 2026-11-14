@@ -168,7 +168,6 @@ internal sealed class MonitorReadPlan
         {
             var telemetry = read(settings.TelemetryAddress, PlcLayout.TelemetryWords);
             ushort runState = ReadRunState(read, telemetry);
-            uint cycle = PlcLayout.ReadCycle(telemetry, settings.LowWordFirst);
             var additionalBlocks = triggered ? completedBlocks : liveBlocks;
             var extra = additionalBlocks.Select(block =>
                 read((ushort)block.Start, (ushort)(block.End - block.Start))).ToArray();
@@ -180,7 +179,7 @@ internal sealed class MonitorReadPlan
             if (extra.Length > 0 || !barcodeInTelemetry)
             {
                 var latest = read(settings.TelemetryAddress, PlcLayout.TelemetryWords);
-                if (cycle != PlcLayout.ReadCycle(latest, settings.LowWordFirst) || runState != ReadRunState(read, latest))
+                if (!telemetry.AsSpan().SequenceEqual(latest) || runState != ReadRunState(read, latest))
                     continue;
             }
 

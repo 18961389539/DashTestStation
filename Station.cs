@@ -512,7 +512,7 @@ public sealed class ModbusStation : IStation
             try { saved = archive(test); }
             catch (Exception ex) { throw new InvalidOperationException($"数据库保存失败。{ex.Message}", ex); }
 
-            // A duplicate cycle is already committed, including when a previous acknowledgement failed.
+            // A duplicate result is already committed, including when a previous acknowledgement failed.
             try { connection.WriteSingleCoil(settings.UnitId, trigger, false); }
             catch (Exception ex) { throw new IOException($"记录已保存，触发线圈清零失败。{ex.Message}", ex); }
             return saved;
@@ -667,17 +667,6 @@ public static class PlcLayout
     public const ushort RecipeWords = 64;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
-    private static uint Unsigned(ushort[] words, int offset, bool lowWordFirst) => lowWordFirst
-        ? ((uint)words[offset + 1] << 16) | words[offset]
-        : ((uint)words[offset] << 16) | words[offset + 1];
-
-    internal static uint ReadCycle(ushort[] words, bool lowWordFirst)
-    {
-        if (words.Length != TelemetryWords)
-            throw new InvalidDataException("PLC 监控区长度与配置不符。");
-        return Unsigned(words, 2, lowWordFirst);
-    }
-
     /// <summary>PLC 运行状态码：1 待机、2 运行中、3 测试OK、4 测试NG、5 急停、6 扫码内容错误、7 电压不在范围内。</summary>
     internal static TestStage StageOf(ushort runState) => runState switch
     {
@@ -701,7 +690,8 @@ public static class PlcLayout
     internal static (TestSnapshot Test, ushort Feedback) Decode(ushort[] words, bool lowWordFirst, ushort runState,
         Func<MonitorPointId, double?> readPoint, string barcode, bool triggered)
     {
-        uint cycle = ReadCycle(words, lowWordFirst);
+        if (words.Length != TelemetryWords)
+            throw new InvalidDataException("PLC 监控区长度与配置不符。");
         var stage = triggered ? TestStage.Completed : StageOf(runState);
         Verdict ReadVerdict(MonitorPointId id, double? code) => code switch
         {
@@ -714,14 +704,13 @@ public static class PlcLayout
         Verdict? OptionalVerdict(MonitorPointId id) => readPoint(id) is double code ? ReadVerdict(id, code) : null;
 
         var result = RequiredVerdict(MonitorPointId.Result);
-        if (stage == TestStage.Completed && (cycle == 0 || result == Verdict.Pending))
-            throw new InvalidDataException("PLC 存档数据须同时提供非零流水号和有效总判定。");
+        if (stage == TestStage.Completed && result == Verdict.Pending)
+            throw new InvalidDataException("PLC 存档数据须提供有效总判定。");
 
         return (new TestSnapshot
         {
             Stage = stage,
             RunState = runState,
-            CycleId = cycle,
             Voltage = readPoint(MonitorPointId.Voltage),
             NormalVoltage = readPoint(MonitorPointId.NormalVoltage),
             NormalCurrent = readPoint(MonitorPointId.NormalCurrent),
@@ -788,7 +777,6 @@ public sealed class SimulationStation : IStation
     private readonly Stopwatch timer = new();
     private Recipe recipe = new();
     private TestSnapshot test = new();
-    private uint cycle;
     private ushort feedback;
     private ushort manualFeedback;
     private bool fail;
@@ -803,12 +791,12 @@ public sealed class SimulationStation : IStation
         if (test.Running)
             throw new InvalidOperationException("当前模拟测试尚未完成。");
         if (barcode.Length == 0)
-            barcode = $"DEMO-{DateTime.Now:MMddHHmmss}-{cycle + 1:000}";
+            barcode = $"DEMO-{DateTime.Now:MMddHHmmssfff}";
         if (barcode.Length > 512)
             throw new InvalidOperationException("条码不能超过 512 个字符。");
 
         fail = forceFailure;
-        test = new TestSnapshot { Stage = TestStage.Normal, Barcode = barcode, Model = recipe.Model, CycleId = ++cycle };
+        test = new TestSnapshot { Stage = TestStage.Normal, Barcode = barcode, Model = recipe.Model };
         timer.Restart();
     }
 

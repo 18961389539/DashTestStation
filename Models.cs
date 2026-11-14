@@ -1,5 +1,8 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace DustLoadScada;
 
@@ -100,7 +103,6 @@ public sealed record TestSnapshot
     public TestStage Stage { get; init; }
     /// <summary>PLC 原始运行状态码；模拟站为空。</summary>
     public ushort? RunState { get; init; }
-    public uint CycleId { get; init; }
     public double Elapsed { get; init; }
     public string Barcode { get; init; } = "";
     public string Model { get; init; } = "";
@@ -127,6 +129,44 @@ public sealed record TestSnapshot
     public Verdict? DustSpeedVerdict { get; init; }
     public Verdict Result { get; init; }
     public bool Running => Stage is TestStage.Normal or TestStage.Dust;
+
+    // Identity of one latched PLC result. Elapsed, live voltage and run state are excluded:
+    // they can change while the PLC holds the same snapshot for a retry.
+    internal string ArchiveFingerprint()
+    {
+        var payload = new StringBuilder();
+        void Field(string? value)
+        {
+            payload.Append(value is null ? -1 : value.Length).Append(':').Append(value).Append('\u001e');
+        }
+        void Number(double? value) => Field(value?.ToString("G17", CultureInfo.InvariantCulture));
+        void Code(Verdict? verdict) => Field(verdict?.ToString());
+
+        Field(Barcode);
+        Field(Model);
+        Number(NormalVoltage);
+        Number(NormalCurrent);
+        Number(DustCurrent);
+        Number(NormalPower);
+        Number(DustPower);
+        Number(PowerDelta);
+        Number(NormalSpeed);
+        Number(DustSpeed);
+        Number(SpeedDelta);
+        Code(PowerVerdict);
+        Code(SpeedVerdict);
+        Code(DirectionVerdict);
+        Code(BrushLightVerdict);
+        Code(BrushLightOffVerdict);
+        Code(NormalCurrentVerdict);
+        Code(NormalPowerVerdict);
+        Code(NormalSpeedVerdict);
+        Code(DustCurrentVerdict);
+        Code(DustPowerVerdict);
+        Code(DustSpeedVerdict);
+        Code(Result);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload.ToString())));
+    }
 }
 
 public sealed record TestRecord(long Id, string Source, DateTimeOffset Time, TestSnapshot Test)

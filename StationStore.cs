@@ -33,15 +33,17 @@ public sealed class StationStore
             );
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS tests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, cycle_id INTEGER NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
                 utc TEXT NOT NULL, barcode TEXT NOT NULL, data TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS plc_cycles (
-                source TEXT NOT NULL, cycle_id INTEGER NOT NULL, PRIMARY KEY (source, cycle_id)
+            CREATE TABLE IF NOT EXISTS result_fingerprints (
+                source TEXT NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY (source, fingerprint)
             );
             CREATE INDEX IF NOT EXISTS ix_tests_utc ON tests(utc);
             """;
         command.ExecuteNonQuery();
+        RemoveCycleStorage(db);
+        EnsureArchiveFingerprints(db);
         if (Recipes().Count == 0)
             SaveRecipe(new Recipe(), true);
     }
@@ -51,6 +53,63 @@ public sealed class StationStore
         var db = new SqliteConnection(connectionString);
         db.Open();
         return db;
+    }
+
+    private static void RemoveCycleStorage(SqliteConnection db)
+    {
+        using var check = db.CreateCommand();
+        check.CommandText = "SELECT 1 FROM pragma_table_info('tests') WHERE name='cycle_id'";
+        if (check.ExecuteScalar() is not null)
+        {
+            using var alter = db.CreateCommand();
+            alter.CommandText = "ALTER TABLE tests DROP COLUMN cycle_id";
+            alter.ExecuteNonQuery();
+        }
+
+        using var drop = db.CreateCommand();
+        drop.CommandText = "DROP TABLE IF EXISTS plc_cycles";
+        drop.ExecuteNonQuery();
+    }
+
+    // Existing history was deduplicated by cycle id. Give those rows a fingerprint once so a replay of the same result is still ignored.
+    private static void EnsureArchiveFingerprints(SqliteConnection db)
+    {
+        using var check = db.CreateCommand();
+        check.CommandText = "SELECT 1 FROM settings WHERE key='archive_fingerprint_v1'";
+        if (check.ExecuteScalar() is not null)
+            return;
+
+        var pending = new List<(string Source, string Fingerprint)>();
+        using (var read = db.CreateCommand())
+        {
+            read.CommandText = "SELECT source, data FROM tests WHERE source != 'simulation'";
+            using var reader = read.ExecuteReader();
+            while (reader.Read())
+            {
+                var test = JsonSerializer.Deserialize<TestSnapshot>(reader.GetString(1))
+                    ?? throw new InvalidDataException("历史记录为空，无法建立结果指纹。");
+                pending.Add((reader.GetString(0), test.ArchiveFingerprint()));
+            }
+        }
+
+        using var transaction = db.BeginTransaction();
+        using var insert = db.CreateCommand();
+        insert.Transaction = transaction;
+        insert.CommandText = "INSERT OR IGNORE INTO result_fingerprints VALUES ($source, $fingerprint)";
+        var sourceParameter = insert.Parameters.Add("$source", SqliteType.Text);
+        var fingerprintParameter = insert.Parameters.Add("$fingerprint", SqliteType.Text);
+        foreach (var (source, fingerprint) in pending)
+        {
+            sourceParameter.Value = source;
+            fingerprintParameter.Value = fingerprint;
+            insert.ExecuteNonQuery();
+        }
+
+        using var mark = db.CreateCommand();
+        mark.Transaction = transaction;
+        mark.CommandText = "INSERT INTO settings VALUES ('archive_fingerprint_v1', '1')";
+        mark.ExecuteNonQuery();
+        transaction.Commit();
     }
 
     public Dictionary<MonitorPointId, MonitorPoint> LoadMonitorPoints() => LoadPoints<MonitorPointId, MonitorPoint>("monitor_points");
@@ -218,17 +277,15 @@ public sealed class StationStore
         using var command = db.CreateCommand();
         command.Transaction = transaction;
         command.Parameters.AddWithValue("$source", source);
-        command.Parameters.AddWithValue("$cycle", (long)test.CycleId);
         if (source != "simulation")
         {
-            if (test.CycleId == 0)
-                throw new InvalidOperationException("PLC 已完成测试，但流水号为 0，无法存档。");
-            command.CommandText = "INSERT OR IGNORE INTO plc_cycles VALUES ($source, $cycle)";
+            command.Parameters.AddWithValue("$fingerprint", test.ArchiveFingerprint());
+            command.CommandText = "INSERT OR IGNORE INTO result_fingerprints VALUES ($source, $fingerprint)";
             if (command.ExecuteNonQuery() == 0)
                 return false;
         }
 
-        command.CommandText = "INSERT INTO tests(source, cycle_id, utc, barcode, data) VALUES ($source, $cycle, $utc, $barcode, $data)";
+        command.CommandText = "INSERT INTO tests(source, utc, barcode, data) VALUES ($source, $utc, $barcode, $data)";
         command.Parameters.AddWithValue("$utc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$barcode", test.Barcode);
         command.Parameters.AddWithValue("$data", JsonSerializer.Serialize(test));
@@ -268,10 +325,57 @@ public sealed class StationStore
     public void DeleteRecord(long id)
     {
         using var db = Open();
+        using var transaction = db.BeginTransaction();
+        string? source = null;
+        string? fingerprint = null;
+        using (var read = db.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = "SELECT source, data FROM tests WHERE id=$id";
+            read.Parameters.AddWithValue("$id", id);
+            using var reader = read.ExecuteReader();
+            if (reader.Read() && reader.GetString(0) != "simulation")
+            {
+                source = reader.GetString(0);
+                fingerprint = (JsonSerializer.Deserialize<TestSnapshot>(reader.GetString(1))
+                    ?? throw new InvalidDataException("历史记录为空，无法删除结果指纹。")).ArchiveFingerprint();
+            }
+        }
+
+        using (var delete = db.CreateCommand())
+        {
+            delete.Transaction = transaction;
+            delete.CommandText = "DELETE FROM tests WHERE id=$id";
+            delete.Parameters.AddWithValue("$id", id);
+            delete.ExecuteNonQuery();
+        }
+
+        if (source is not null && fingerprint is not null && !FingerprintStillUsed(db, transaction, source, fingerprint))
+        {
+            using var forget = db.CreateCommand();
+            forget.Transaction = transaction;
+            forget.CommandText = "DELETE FROM result_fingerprints WHERE source=$source AND fingerprint=$fingerprint";
+            forget.Parameters.AddWithValue("$source", source);
+            forget.Parameters.AddWithValue("$fingerprint", fingerprint);
+            forget.ExecuteNonQuery();
+        }
+        transaction.Commit();
+    }
+
+    private static bool FingerprintStillUsed(SqliteConnection db, SqliteTransaction transaction, string source, string fingerprint)
+    {
         using var command = db.CreateCommand();
-        command.CommandText = "DELETE FROM tests WHERE id=$id";
-        command.Parameters.AddWithValue("$id", id);
-        command.ExecuteNonQuery();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT data FROM tests WHERE source=$source";
+        command.Parameters.AddWithValue("$source", source);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var test = JsonSerializer.Deserialize<TestSnapshot>(reader.GetString(0));
+            if (test?.ArchiveFingerprint() == fingerprint)
+                return true;
+        }
+        return false;
     }
 
     public static void Export(string path, IEnumerable<TestRecord> records)

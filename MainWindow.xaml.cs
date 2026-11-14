@@ -64,7 +64,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? pollCancellation;
     private Task polling = Task.CompletedTask;
     private Task recipeDispatch = Task.CompletedTask;
-    private uint lastCompletedCycle;
+    private bool simulationResultArchived;
     private bool selectingRecipe;
     private bool closing;
     private bool allowClose;
@@ -428,14 +428,26 @@ public partial class MainWindow : Window
                     view.Update(sample.Test, sample.Feedback, sample.UnknownFeedback);
                     if (sample.Test.Running || sample.Test.Stage == TestStage.Fault)
                         ReleaseHeldManual();
-                    if (sample.Test.Stage == TestStage.Completed && UsesCompletionArchive(station))
+                    if (UsesCompletionArchive(station))
                     {
-                        try { Archive(station, sample.Test); }
-                        catch (Exception ex)
+                        if (sample.Test.Stage == TestStage.Completed)
                         {
-                            storageError = $"测试结果存档失败，将重试。{ex.Message}";
-                            view.Notice = storageError;
+                            if (!simulationResultArchived)
+                            {
+                                try
+                                {
+                                    Archive(station, sample.Test);
+                                    simulationResultArchived = true;
+                                }
+                                catch (Exception ex)
+                                {
+                                    storageError = $"测试结果存档失败，将重试。{ex.Message}";
+                                    view.Notice = storageError;
+                                }
+                            }
                         }
+                        else
+                            simulationResultArchived = false;
                     }
                 }
 
@@ -528,10 +540,7 @@ public partial class MainWindow : Window
 
     private void Archive(IStation station, TestSnapshot test)
     {
-        if (test.CycleId == lastCompletedCycle)
-            return;
         bool saved = store.Record(station.Source, test);
-        lastCompletedCycle = test.CycleId;
         storageError = null;
         if (saved)
             NotifyArchived(station);
@@ -638,7 +647,7 @@ public partial class MainWindow : Window
             IStation next = settings is null ? new SimulationStation() : StationDevices.Plc;
             if (next is SimulationStation)
                 await next.ApplyAsync(view.ActiveRecipe);
-            lastCompletedCycle = 0;
+            simulationResultArchived = false;
             storageError = null;
             view.Use(next);
             view.Notice = view.IsSimulation ? "模拟模式已就绪。" : "正在连接 PLC。";
