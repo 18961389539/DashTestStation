@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>DustLoadScada</AssemblyName>
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Newland.Fm430.Tests" />
@@ -14,6 +15,7 @@
     <PackageReference Include="NModbus" Version="3.0.83" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="System.IO.Ports" Version="10.0.7" />
+    <Resource Include="app.ico" />
     <None Update="plc.example.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

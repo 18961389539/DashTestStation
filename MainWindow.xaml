@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:DustLoadScada"
         Title="灰尘负载测试台" Width="1200" Height="780" MinWidth="920" MinHeight="650"
+        Icon="app.ico"
         Style="{StaticResource {x:Type Window}}"
         WindowStartupLocation="CenterScreen" Language="zh-CN">
     <Window.Resources>
