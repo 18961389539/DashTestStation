@@ -48,6 +48,18 @@ public sealed record Recipe
     public double PowerDeltaMax { get; set; } = 30;
     public double SpeedDeltaMin { get; set; } = 0;
     public double SpeedDeltaMax { get; set; } = 500;
+    public double NormalCurrentMin { get; set; }
+    public double NormalCurrentMax { get; set; } = 10;
+    public double NormalPowerMin { get; set; }
+    public double NormalPowerMax { get; set; } = 300;
+    public double NormalSpeedMin { get; set; }
+    public double NormalSpeedMax { get; set; } = 3000;
+    public double DustCurrentMin { get; set; }
+    public double DustCurrentMax { get; set; } = 10;
+    public double DustPowerMin { get; set; }
+    public double DustPowerMax { get; set; } = 300;
+    public double DustSpeedMin { get; set; }
+    public double DustSpeedMax { get; set; } = 3000;
     public int BarcodeStartIndex { get; set; } = 1;
     public int BarcodeCompareLength { get; set; }
     public double NormalSeconds { get; set; } = 3;
@@ -73,6 +85,12 @@ public sealed record Recipe
         ValidateRange(VoltageMin, VoltageMax, "电压");
         ValidateRange(PowerDeltaMin, PowerDeltaMax, "功率差");
         ValidateRange(SpeedDeltaMin, SpeedDeltaMax, "转速差");
+        ValidateRange(NormalCurrentMin, NormalCurrentMax, "正常电流");
+        ValidateRange(NormalPowerMin, NormalPowerMax, "正常功率");
+        ValidateRange(NormalSpeedMin, NormalSpeedMax, "正常转速");
+        ValidateRange(DustCurrentMin, DustCurrentMax, "灰尘电流");
+        ValidateRange(DustPowerMin, DustPowerMax, "灰尘功率");
+        ValidateRange(DustSpeedMin, DustSpeedMax, "灰尘转速");
         if (new[] { SpeedDeltaMin, SpeedDeltaMax }.Any(value =>
                 !double.IsFinite(value) || value != Math.Truncate(value)))
             throw new InvalidOperationException("转速差上下限须为整数。");
@@ -107,9 +125,12 @@ public sealed record TestSnapshot
     public string Barcode { get; init; } = "";
     public string Model { get; init; } = "";
     public double? Voltage { get; init; }
+    public double? RealtimeCurrent { get; init; }
+    public double? RealtimePower { get; init; }
     public double? NormalVoltage { get; init; }
     public double? NormalCurrent { get; init; }
     public double? DustCurrent { get; init; }
+    public double? DustVoltage { get; init; }
     public double? NormalPower { get; init; }
     public double? DustPower { get; init; }
     public double? PowerDelta { get; init; }
@@ -132,8 +153,8 @@ public sealed record TestSnapshot
     public Verdict Result { get; init; }
     public bool Running => Stage is TestStage.Normal or TestStage.Dust;
 
-    // Identity of one latched PLC result. Elapsed, live voltage and run state are excluded:
-    // they can change while the PLC holds the same snapshot for a retry.
+    // Identity of one latched PLC result. Elapsed, live readings (voltage/current/power) and run state
+    // are excluded: they can change while the PLC holds the same snapshot for a retry.
     internal string ArchiveFingerprint()
     {
         var payload = new StringBuilder();
@@ -155,6 +176,7 @@ public sealed record TestSnapshot
         Number(NormalSpeed);
         Number(DustSpeed);
         Number(SpeedDelta);
+        Number(DustVoltage);
         Code(PowerVerdict);
         Code(SpeedVerdict);
         Code(DirectionVerdict);

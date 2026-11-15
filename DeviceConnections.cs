@@ -6,10 +6,23 @@ using Newland.Fm430;
 
 namespace DustLoadScada;
 
-public sealed record CameraSettings(string Host = "", int Port = 5000);
+public sealed record CameraSettings(string Host = "", int Port = 5000, string SendText = "", int SendEnding = 0);
 public sealed record ScannerSettings(string Port = "", int BaudRate = 9600, int DataBits = 8,
-    Parity Parity = Parity.None, StopBits StopBits = StopBits.One, Handshake Handshake = Handshake.None);
+    Parity Parity = Parity.None, StopBits StopBits = StopBits.One, Handshake Handshake = Handshake.None,
+    string SendText = "", bool SendHex = false, int SendEnding = 0);
 public sealed record PeripheralSettings(CameraSettings Camera, ScannerSettings Scanner);
+
+// 设备管理页的调试输入与最近显示内容，随「保存全部配置」持久化，重开时恢复。
+internal sealed record DevicePageState(
+    string CameraReceived = "",
+    string ScannerBarcode = "",
+    string ScannerRaw = "",
+    string ScannerRawText = "",
+    string PlcTestArea = "HoldingRegisters",
+    string PlcTestAddress = "0",
+    string PlcTestCount = "1",
+    string PlcTestValue = "",
+    string PlcTestResult = "");
 
 internal static class StationDevices
 {
@@ -18,7 +31,7 @@ internal static class StationDevices
     internal static ScannerConnection Scanner { get; } = new();
 }
 
-internal sealed record DeviceStatus(string State, string Detail = "", string LastReceived = "");
+internal sealed record DeviceStatus(string State, string Detail = "", string LastReceived = "", string LastRaw = "", string LastRawText = "");
 
 internal sealed class CameraConnection
 {
@@ -304,6 +317,7 @@ internal sealed class ScannerConnection
     internal const string NoReadDisplay = "未读到条码（NG）";
 
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly List<byte> rawBuffer = new();
     private Fm430Scanner? scanner;
     private CancellationTokenSource? cancellation;
     private Task receiving = Task.CompletedTask;
@@ -327,6 +341,7 @@ internal sealed class ScannerConnection
                     await client.ConnectAsync().ConfigureAwait(false);
                     scanner = client;
                     owned = true;
+                    client.DataReceived += OnDataReceived;
                 }
                 finally
                 {
@@ -367,6 +382,25 @@ internal sealed class ScannerConnection
                 throw new InvalidOperationException("请先连接扫码枪。");
 
             await activeScanner.SendAsync(command).ConfigureAwait(false);
+        }
+        finally { gate.Release(); }
+    }
+
+    internal Task StartScanAsync() => SendTriggerAsync(start: true);
+    internal Task StopScanAsync() => SendTriggerAsync(start: false);
+
+    private async Task SendTriggerAsync(bool start)
+    {
+        await gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (scanner is not { IsConnected: true } activeScanner || status.State != "已连接")
+                throw new InvalidOperationException("请先连接扫码枪。");
+
+            if (start)
+                await activeScanner.StartScanningAsync().ConfigureAwait(false);
+            else
+                await activeScanner.StopScanningAsync().ConfigureAwait(false);
         }
         finally { gate.Release(); }
     }
@@ -425,7 +459,31 @@ internal sealed class ScannerConnection
         if (scanner is not null)
             await scanner.DisposeAsync().ConfigureAwait(false);
         scanner = null;
+        rawBuffer.Clear();
         status = new("未连接");
+    }
+
+    private void OnDataReceived(ReadOnlyMemory<byte> bytes)
+    {
+        // 串口数据常分多个小块到达，累积整段回复再展示，避免只看到最后一个碎片。
+        foreach (byte value in bytes.Span)
+            rawBuffer.Add(value);
+        if (rawBuffer.Count > 256)
+            rawBuffer.RemoveRange(0, rawBuffer.Count - 256);
+        var hex = Convert.ToHexString(rawBuffer.ToArray());
+        status = status with
+        {
+            LastRaw = string.Join(" ", Enumerable.Range(0, hex.Length / 2).Select(i => hex.Substring(i * 2, 2))),
+            LastRawText = Printable(rawBuffer)
+        };
+    }
+
+    private static string Printable(List<byte> bytes)
+    {
+        var chars = new char[bytes.Count];
+        for (int i = 0; i < bytes.Count; i++)
+            chars[i] = bytes[i] is >= 0x20 and <= 0x7E ? (char)bytes[i] : '.';
+        return new string(chars);
     }
 
     private async Task ReceiveAsync(Fm430Scanner client, CancellationToken token)
@@ -435,7 +493,8 @@ internal sealed class ScannerConnection
             while (!token.IsCancellationRequested)
             {
                 string barcode = await client.ReadBarcodeAsync(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
-                status = status with { LastReceived = barcode == NoReadMessage ? NoReadDisplay : barcode };
+                rawBuffer.Clear();
+                status = status with { LastReceived = barcode == NoReadMessage ? NoReadDisplay : barcode, LastRaw = "", LastRawText = "" };
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }

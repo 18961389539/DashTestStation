@@ -34,6 +34,9 @@ public sealed class Fm430Scanner : IAsyncDisposable
 
     public bool IsConnected => connected;
 
+    // 在读取线程上触发，参数仅在本次调用内有效；订阅方如需保留须自行复制。
+    public event Action<ReadOnlyMemory<byte>>? DataReceived;
+
     public byte[] StartCommand
     {
         get => startCommand;
@@ -249,6 +252,7 @@ public sealed class Fm430Scanner : IAsyncDisposable
             catch (TimeoutException) { continue; }
             if (length == 0)
                 throw new IOException("扫码枪串口已停止接收数据。");
+            DataReceived?.Invoke(buffer.AsMemory(0, length));
             frames.Append(buffer.AsSpan(0, length), barcodes.Enqueue);
         }
     }

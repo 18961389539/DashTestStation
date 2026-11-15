@@ -36,6 +36,9 @@ public partial class MainWindow : Window
         (MonitorPointId.DustPowerVerdict, "灰尘功率判定结果"),
         (MonitorPointId.DustSpeed, "灰尘测试转速"),
         (MonitorPointId.DustSpeedVerdict, "灰尘转速判定结果"),
+        (MonitorPointId.DustVoltage, "灰尘感应电压"),
+        (MonitorPointId.RealtimeCurrent, "实时电流"),
+        (MonitorPointId.RealtimePower, "实时功率"),
         (MonitorPointId.Result, "总判定结果")
     ];
 
@@ -54,6 +57,8 @@ public partial class MainWindow : Window
     private ScannerTriggerSettings scannerTrigger = new();
     private Dictionary<ManualPointId, ManualPoint> manualPoints = new();
     private Dictionary<RecipePointId, ushort> recipePoints = new();
+    private Dictionary<RecipePointId, double> recipeScales = new();
+    private Dictionary<RecipePointId, RegisterDataType> recipeTypes = new();
     private HistoryPointRow[] historyPointRows = [];
     private DispatcherTimer? historyPointHighlightTimer;
     private DataGridRow? highlightedHistoryPointRow;
@@ -122,6 +127,8 @@ public partial class MainWindow : Window
             scannerTrigger = store.LoadScannerTrigger();
             manualPoints = store.LoadManualPoints();
             recipePoints = store.LoadRecipePoints();
+            recipeScales = store.LoadRecipeScales();
+            recipeTypes = store.LoadRecipeTypes();
             inspectionPoints = store.LoadInspectionPoints();
             runtimePoint = store.LoadRuntimePoint();
             runtime = new RuntimeCounter(store.LoadRuntimeTotal());
@@ -295,60 +302,103 @@ public partial class MainWindow : Window
         ScannerTriggerAddress.Text = scannerTrigger.TriggerAddress is ushort trigger ? FormatCoil(trigger) : "";
         ScannerBarcodeAddress.Text = PlcAddress.FormatRegister(scannerTrigger.BarcodeAddress);
         ScannerVerdictAddress.Text = PlcAddress.FormatRegister(scannerTrigger.VerdictAddress);
-        ScannerSettingsError.Text = "";
     }
 
-    private async void SaveScannerSettings_Click(object sender, RoutedEventArgs e)
+    private async Task SaveScannerSettingsAsync(ScannerTriggerSettings updated)
+    {
+        updated.Validate();
+        if (view.Station is ModbusStation plc)
+            await plc.UpdateScannerSettingsAsync(updated, () => store.SaveScannerTrigger(updated));
+        else
+            store.SaveScannerTrigger(updated);
+        scannerTrigger = updated;
+        ShowScannerSettings();
+    }
+
+    private async void EditScannerTrigger_Click(object sender, RoutedEventArgs e)
     {
         if (!view.CanEditSystemSettings || closing)
             return;
-
-        string triggerText = ScannerTriggerAddress.Text.Trim();
-        ushort? trigger = null;
-        if (triggerText.Length != 0)
+        await PerformAsync(async () =>
         {
-            if (!PlcAddress.TryParseCoil(triggerText, out ushort address))
+            var dialog = PointAddressDialog.ForScannerTrigger(scannerTrigger.TriggerAddress);
+            dialog.Owner = this;
+            dialog.SetCommunicationInfo("线圈 · FC01 只读测试；扫码触发由上位机清零。");
+            if (view.Station is ModbusStation station)
+                dialog.SetReadTest(async () =>
+                {
+                    ushort address = dialog.ScannerTriggerAddress ?? throw new InvalidOperationException("扫码触发线圈未配置。");
+                    var values = await station.ReadTestAsync(PlcTestArea.Coils, address, 1);
+                    return $"只读成功：线圈 {PlcAddress.FormatCoil(address)}={values[0]}。";
+                });
+            dialog.SetSaveAction(async () =>
             {
-                ScannerSettingsError.Text = "请输入 M、Y、X、S、HM 编号或从 0 开始的十进制线圈地址。";
-                ScannerTriggerAddress.Focus();
-                return;
-            }
-            trigger = address;
-        }
+                var updated = scannerTrigger with { TriggerAddress = dialog.ScannerTriggerAddress };
+                if (updated.TriggerAddress == scannerTrigger.TriggerAddress)
+                    return;
+                await SaveScannerSettingsAsync(updated);
+                view.Notice = updated.TriggerAddress is ushort coil
+                    ? $"扫码触发线圈已设为 {FormatCoil(coil)}。" : "扫码触发已停用。";
+            });
+            dialog.ShowDialog();
+        });
+    }
 
-        if (!ScannerTriggerSettings.TryParseRegister(ScannerBarcodeAddress.Text, out ushort barcodeAddress))
-        {
-            ScannerSettingsError.Text = "请输入有效的二维码 D 寄存器地址，例如 D4000。";
-            ScannerBarcodeAddress.Focus();
+    private async void EditScannerBarcode_Click(object sender, RoutedEventArgs e)
+    {
+        if (!view.CanEditSystemSettings || closing)
             return;
-        }
-        if (!ScannerTriggerSettings.TryParseRegister(ScannerVerdictAddress.Text, out ushort verdictAddress))
+        await PerformAsync(async () =>
         {
-            ScannerSettingsError.Text = "请输入有效的比对结果 D 寄存器地址，例如 D3。";
-            ScannerVerdictAddress.Focus();
-            return;
-        }
+            var dialog = PointAddressDialog.ForScannerBarcode(scannerTrigger.BarcodeAddress);
+            dialog.Owner = this;
+            dialog.SetCommunicationInfo($"保持寄存器 · FC03 只读测试 / FC16 写回；固定 {ScannerTriggerSettings.MaxBarcodeWords} 字，写回前清零整块。");
+            if (view.Station is ModbusStation station)
+                dialog.SetReadTest(async () =>
+                {
+                    ushort address = dialog.ScannerBarcodeAddress;
+                    var words = await station.ReadTestAsync(PlcTestArea.HoldingRegisters, address, (ushort)ScannerTriggerSettings.MaxBarcodeWords);
+                    string text = PlcLayout.ReadString(words);
+                    return $"只读成功：寄存器 {address}–{address + ScannerTriggerSettings.MaxBarcodeWords - 1}；解码“{text}”。";
+                });
+            dialog.SetSaveAction(async () =>
+            {
+                var updated = scannerTrigger with { BarcodeAddress = dialog.ScannerBarcodeAddress };
+                if (updated.BarcodeAddress == scannerTrigger.BarcodeAddress)
+                    return;
+                await SaveScannerSettingsAsync(updated);
+                view.Notice = $"二维码写回地址已设为 {PlcAddress.FormatRegister(updated.BarcodeAddress)}（{ScannerTriggerSettings.MaxBarcodeWords} 字）。";
+            });
+            dialog.ShowDialog();
+        });
+    }
 
-        var updated = new ScannerTriggerSettings(trigger, barcodeAddress, verdictAddress);
-        try
-        {
-            updated.Validate();
-            if (view.Station is ModbusStation plc)
-                await plc.UpdateScannerSettingsAsync(updated, () => store.SaveScannerTrigger(updated));
-            else
-                store.SaveScannerTrigger(updated);
-        }
-        catch (Exception ex)
-        {
-            ScannerSettingsError.Text = $"保存失败。{ex.Message}";
+    private async void EditScannerVerdict_Click(object sender, RoutedEventArgs e)
+    {
+        if (!view.CanEditSystemSettings || closing)
             return;
-        }
-
-        scannerTrigger = updated;
-        ShowScannerSettings();
-        view.Notice = trigger is ushort coil
-            ? $"扫码触发及写回地址已保存：{FormatCoil(coil)}、D{barcodeAddress}、D{verdictAddress}。"
-            : "扫码触发已停用；二维码及比对结果地址已保存。";
+        await PerformAsync(async () =>
+        {
+            var dialog = PointAddressDialog.ForScannerVerdict(scannerTrigger.VerdictAddress);
+            dialog.Owner = this;
+            dialog.SetCommunicationInfo("保持寄存器 · FC03 只读测试 / FC06 写回；协议固定 UInt16（1=匹配，2=不匹配）。");
+            if (view.Station is ModbusStation station)
+                dialog.SetReadTest(async () =>
+                {
+                    ushort address = dialog.ScannerVerdictAddress;
+                    var words = await station.ReadTestAsync(PlcTestArea.HoldingRegisters, address, 1);
+                    return $"只读成功：寄存器 {address}；原始值 {words[0]}（0x{words[0]:X4}）。";
+                });
+            dialog.SetSaveAction(async () =>
+            {
+                var updated = scannerTrigger with { VerdictAddress = dialog.ScannerVerdictAddress };
+                if (updated.VerdictAddress == scannerTrigger.VerdictAddress)
+                    return;
+                await SaveScannerSettingsAsync(updated);
+                view.Notice = $"比对结果写回地址已设为 {PlcAddress.FormatRegister(updated.VerdictAddress)}。";
+            });
+            dialog.ShowDialog();
+        });
     }
 
     private void ResetRuntime_Click(object sender, RoutedEventArgs e)
@@ -666,7 +716,7 @@ public partial class MainWindow : Window
                 {
                     settings.Validate();
                     StationDevices.Plc.Configure(settings, monitorPoints, manualPoints, recipePoints,
-                        inspectionPoints, barcodePoint, recordTrigger, scannerTrigger, timerTrigger);
+                        inspectionPoints, barcodePoint, recordTrigger, scannerTrigger, timerTrigger, recipeScales, recipeTypes);
                 }
             }
             catch
@@ -970,7 +1020,7 @@ public partial class MainWindow : Window
                     var words = await station.ReadTestAsync(
                         settings.UseInputRegisters ? PlcTestArea.InputRegisters : PlcTestArea.HoldingRegisters,
                         point.Address, (ushort)point.WordCount);
-                    double decoded = definition.Decode(point.DataType, words, settings.LowWordFirst);
+                    double decoded = definition.Decode(point.DataType, words, settings.LowWordFirst, definition.ScaleFor(point));
                     return $"只读成功：原始值 [{string.Join(", ", words)}]（{string.Join(", ", words.Select(word => $"0x{word:X4}"))}）；"
                         + $"解析值 {decoded.ToString("0.####", CultureInfo.InvariantCulture)}"
                         + (definition.ScaledUnit is { } unit ? $" {unit}" : "")
@@ -992,8 +1042,7 @@ public partial class MainWindow : Window
                     await station.UpdateMonitorPointsAsync(updated, () => store.SaveMonitorPoints(updated));
                 else
                 {
-                    var monitoring = new MonitorReadPlan(settings, updated, barcodePoint);
-                    _ = new RecipeWritePlan(settings, recipePoints, monitoring);
+                    _ = new MonitorReadPlan(settings, updated, barcodePoint);
                     store.SaveMonitorPoints(updated);
                 }
 
@@ -1024,7 +1073,9 @@ public partial class MainWindow : Window
             var definition = RecipePoint.All[id];
             ushort? defaultAddress = definition.DefaultAddress(settings);
             bool hasOverride = recipePoints.TryGetValue(id, out ushort existing);
-            var dialog = new PointAddressDialog(definition, hasOverride ? existing : defaultAddress, defaultAddress) { Owner = this };
+            double? currentScale = recipeScales.TryGetValue(id, out double existingScale) ? existingScale : null;
+            RegisterDataType? currentType = recipeTypes.TryGetValue(id, out RegisterDataType existingType) ? existingType : null;
+            var dialog = new PointAddressDialog(definition, hasOverride ? existing : defaultAddress, defaultAddress, currentScale, currentType) { Owner = this };
             dialog.SetCommunicationInfo($"保持寄存器 · FC03 只读测试 / FC16 配方写入；地址为零基偏移，"
                 + $"{(settings.LowWordFirst ? "低字在前" : "高字在前")}。读取测试不会写入配方。");
             if (station is not null)
@@ -1032,9 +1083,10 @@ public partial class MainWindow : Window
                 {
                     ushort address = dialog.RecipeAddress ?? defaultAddress
                         ?? throw new InvalidOperationException("该配方点位没有有效地址。");
-                    var words = await station.ReadTestAsync(PlcTestArea.HoldingRegisters, address, (ushort)definition.WordCount);
-                    return $"只读成功：寄存器 {address}–{address + definition.WordCount - 1}；"
-                        + $"原始值 [{string.Join(", ", words)}]（{string.Join(", ", words.Select(word => $"0x{word:X4}"))}）。";
+                    int words = RecipePoint.WordsFor(dialog.RecipeType ?? definition.DefaultType);
+                    var read = await station.ReadTestAsync(PlcTestArea.HoldingRegisters, address, (ushort)words);
+                    return $"只读成功：寄存器 {address}–{address + words - 1}；"
+                        + $"原始值 [{string.Join(", ", read)}]（{string.Join(", ", read.Select(word => $"0x{word:X4}"))}）。";
                 });
             dialog.SetSaveAction(async () =>
             {
@@ -1044,16 +1096,39 @@ public partial class MainWindow : Window
                 else
                     updated.Remove(id);
 
+                var updatedScales = new Dictionary<RecipePointId, double>(recipeScales);
+                if (dialog.RecipeScale is double scale)
+                    updatedScales[id] = scale;
+                else
+                    updatedScales.Remove(id);
+
+                var updatedTypes = new Dictionary<RecipePointId, RegisterDataType>(recipeTypes);
+                if (dialog.RecipeType is RegisterDataType type)
+                    updatedTypes[id] = type;
+                else
+                    updatedTypes.Remove(id);
+
                 if (station is not null)
-                    await station.UpdateRecipePointsAsync(updated, () => store.SaveRecipePoints(updated));
+                    await station.UpdateRecipePointsAsync(updated, () =>
+                    {
+                        store.SaveRecipePoints(updated);
+                        store.SaveRecipeScales(updatedScales);
+                        store.SaveRecipeTypes(updatedTypes);
+                    }, updatedScales, updatedTypes);
                 else
                 {
-                    _ = new RecipeWritePlan(settings, updated, new MonitorReadPlan(settings, monitorPoints, barcodePoint));
+                    _ = new RecipeWritePlan(settings, updated, updatedScales, updatedTypes);
                     store.SaveRecipePoints(updated);
+                    store.SaveRecipeScales(updatedScales);
+                    store.SaveRecipeTypes(updatedTypes);
                 }
                 recipePoints = updated;
-                view.Notice = (dialog.RecipeAddress ?? defaultAddress) is ushort saved
-                    ? $"{definition.Label}写入地址已设为 {saved}。" : $"{definition.Label}写入地址已清除。";
+                recipeScales = updatedScales;
+                recipeTypes = updatedTypes;
+                view.Notice = ((dialog.RecipeAddress ?? defaultAddress) is ushort saved
+                    ? $"{definition.Label}写入地址已设为 {saved}。" : $"{definition.Label}写入地址已清除。")
+                    + $"类型 {dialog.RecipeType ?? definition.DefaultType}。"
+                    + (dialog.RecipeScale is double customScale ? $"倍率 {customScale}。" : "");
             });
             dialog.ShowDialog();
         });
@@ -1525,9 +1600,11 @@ public partial class MainWindow : Window
                 string group = field.Id switch
                 {
                     MonitorPointId.Result => "04 · 判定结果",
+                    MonitorPointId.RealtimeCurrent or MonitorPointId.RealtimePower => "05 · 实时监测",
                     MonitorPointId.DustCurrent or MonitorPointId.DustCurrentVerdict
                         or MonitorPointId.DustPower or MonitorPointId.DustPowerVerdict
-                        or MonitorPointId.DustSpeed or MonitorPointId.DustSpeedVerdict => "03 · 灰尘测试",
+                        or MonitorPointId.DustSpeed or MonitorPointId.DustSpeedVerdict
+                        or MonitorPointId.DustVoltage => "03 · 灰尘测试",
                     _ => "02 · 正常测试"
                 };
                 return new HistoryPointRow(field.Id, group, field.Label,
@@ -1725,7 +1802,7 @@ public partial class MainWindow : Window
                     await station.UpdateBarcodePointAsync(updated, () => store.SaveBarcodePoint(updated));
                 else
                 {
-                    _ = new RecipeWritePlan(settings, recipePoints, new MonitorReadPlan(settings, monitorPoints, updated));
+                    _ = new MonitorReadPlan(settings, monitorPoints, updated);
                     store.SaveBarcodePoint(updated);
                 }
 

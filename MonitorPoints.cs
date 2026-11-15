@@ -10,12 +10,13 @@ public enum MonitorPointId
     NormalVoltage, NormalCurrent, NormalCurrentVerdict, NormalPowerVerdict, NormalSpeedVerdict,
     BrushLightOffVerdict, DustCurrent, DustCurrentVerdict, DustPowerVerdict, DustSpeedVerdict,
     IndicatorOffCameraVerdict, HeadlightIndicatorCameraVerdict,
-    RunState
+    RunState,
+    RealtimeCurrent, RealtimePower, DustVoltage
 }
 
 public enum RegisterDataType { Int16, UInt16, Int32, UInt32, Float32 }
 
-public sealed record MonitorPoint(ushort Address, RegisterDataType DataType)
+public sealed record MonitorPoint(ushort Address, RegisterDataType DataType, double? Scale = null)
 {
     internal int WordCount => DataType is RegisterDataType.Int16 or RegisterDataType.UInt16 ? 1 : 2;
     internal int End => Address + WordCount;
@@ -64,7 +65,10 @@ internal sealed record MonitorPointDefinition(
         [MonitorPointId.DustSpeedVerdict] = new("灰尘转速判定结果", null, RegisterDataType.UInt16),
         [MonitorPointId.IndicatorOffCameraVerdict] = new("跑马灯灭相机判定", null, RegisterDataType.UInt16, Absolute: PlcAddress.HMBase + 2),
         [MonitorPointId.HeadlightIndicatorCameraVerdict] = new("头灯跑马灯相机判定", null, RegisterDataType.UInt16, Absolute: PlcAddress.HMBase + 1),
-        [MonitorPointId.RunState] = new("运行状态", 0, RegisterDataType.Int16)
+        [MonitorPointId.RunState] = new("运行状态", 0, RegisterDataType.Int16),
+        [MonitorPointId.RealtimeCurrent] = new("实时电流", null, RegisterDataType.Float32, "A", Absolute: 302),
+        [MonitorPointId.RealtimePower] = new("实时功率", null, RegisterDataType.Float32, "W", Absolute: 304),
+        [MonitorPointId.DustVoltage] = new("灰尘感应电压", null, RegisterDataType.Float32, "V", Absolute: 402)
     };
 
     public static MonitorPointDefinition For(MonitorPointId id) => Definitions[id];
@@ -73,7 +77,12 @@ internal sealed record MonitorPointDefinition(
         ? new(absolute, DefaultType)
         : Offset is int offset ? new(checked((ushort)(baseAddress + offset)), DefaultType) : null;
 
-    public double Decode(RegisterDataType type, ReadOnlySpan<ushort> words, bool lowWordFirst)
+    public double DefaultScale(RegisterDataType type) =>
+        ScaledUnit is not null && type != RegisterDataType.Float32 ? 0.01 : 1;
+
+    public double ScaleFor(MonitorPoint point) => point.Scale ?? DefaultScale(point.DataType);
+
+    public double Decode(RegisterDataType type, ReadOnlySpan<ushort> words, bool lowWordFirst, double? scale = null)
     {
         uint bits = words[0];
         if (words.Length == 2)
@@ -90,7 +99,7 @@ internal sealed record MonitorPointDefinition(
         };
         if (!double.IsFinite(raw))
             throw new InvalidDataException($"{Label}返回了无效的浮点数。");
-        return ScaledUnit is not null && type != RegisterDataType.Float32 ? raw / 100 : raw;
+        return raw * (scale ?? DefaultScale(type));
     }
 }
 
@@ -109,7 +118,6 @@ internal sealed class MonitorReadPlan
         this.barcodeOverride = barcodeOverride;
         barcode = barcodeOverride ?? BarcodePoint.DefaultAt(settings.TelemetryAddress);
         barcode.Validate();
-        ValidateRecipeOverlap(barcode.Address, barcode.End, "二维码");
         foreach (var id in Enum.GetValues<MonitorPointId>())
         {
             var definition = MonitorPointDefinition.For(id);
@@ -119,7 +127,12 @@ internal sealed class MonitorReadPlan
             if (!Enum.IsDefined(point.DataType) || point.End > 65536)
                 throw new InvalidOperationException($"{definition.Label}的数据类型或寄存器地址超出范围。");
 
-            ValidateRecipeOverlap(point.Address, point.End, definition.Label);
+            // 同页查重：监控点之间、监控点与二维码之间不得共用寄存器；跨页面（配方/扫码写回等）允许重复。
+            if (Overlaps(point.Address, point.End, barcode.Address, barcode.End))
+                throw new InvalidOperationException($"{definition.Label}的地址与二维码点位重叠。");
+            foreach (var (otherId, other) in points)
+                if (Overlaps(point.Address, point.End, other.Address, other.End))
+                    throw new InvalidOperationException($"{definition.Label}的地址与监控点{MonitorPointDefinition.For(otherId).Label}重叠。");
 
             points.Add(id, point);
         }
@@ -127,17 +140,13 @@ internal sealed class MonitorReadPlan
         additionalBlocks = MergeAdditionalBlocks(points.Values);
     }
 
+    private static bool Overlaps(int start, int end, int otherStart, int otherEnd) =>
+        start < otherEnd && otherStart < end;
+
     public MonitorReadPlan WithPoints(IReadOnlyDictionary<MonitorPointId, MonitorPoint> overrides) =>
         new(settings, overrides, barcodeOverride);
 
     public MonitorReadPlan WithBarcode(BarcodePoint? point) => new(settings, points, point);
-
-    private void ValidateRecipeOverlap(int start, int end, string label)
-    {
-        if (!settings.UseInputRegisters && settings.RecipeAddress is ushort recipeAddress
-            && start < recipeAddress + PlcLayout.RecipeWords && recipeAddress < end)
-            throw new InvalidOperationException($"{label}的地址与配方保持寄存器重叠。");
-    }
 
     private List<(int Start, int End)> MergeAdditionalBlocks(IEnumerable<MonitorPoint> candidates)
     {
@@ -157,11 +166,6 @@ internal sealed class MonitorReadPlan
 
     private bool InTelemetry(int start, int end) => start >= settings.TelemetryAddress
         && end <= settings.TelemetryAddress + PlcLayout.TelemetryWords;
-
-    public bool OverlapsHoldingRegisters(int start, int end, bool includeBarcode = true, bool includeTelemetryBlock = true) => !settings.UseInputRegisters &&
-        ((includeTelemetryBlock && start < settings.TelemetryAddress + PlcLayout.TelemetryWords && settings.TelemetryAddress < end)
-            || (includeBarcode && start < barcode.End && barcode.Address < end)
-            || points.Values.Any(point => start < point.End && point.Address < end));
 
     public (TestSnapshot Test, ushort Feedback) Read(Func<ushort, ushort, ushort[]> read, bool triggered = false)
     {
@@ -190,11 +194,13 @@ internal sealed class MonitorReadPlan
                     return null;
                 if (InTelemetry(point.Address, point.End))
                     return definition.Decode(point.DataType,
-                        telemetry.AsSpan(point.Address - settings.TelemetryAddress, point.WordCount), settings.LowWordFirst);
+                        telemetry.AsSpan(point.Address - settings.TelemetryAddress, point.WordCount), settings.LowWordFirst,
+                        definition.ScaleFor(point));
 
                 int block = additionalBlocks.FindIndex(block => point.Address >= block.Start && point.End <= block.End);
                 return definition.Decode(point.DataType,
-                    extra[block].AsSpan(point.Address - additionalBlocks[block].Start, point.WordCount), settings.LowWordFirst);
+                    extra[block].AsSpan(point.Address - additionalBlocks[block].Start, point.WordCount), settings.LowWordFirst,
+                    definition.ScaleFor(point));
             }
 
             return PlcLayout.Decode(telemetry, settings.LowWordFirst, runState, Value,

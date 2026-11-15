@@ -44,6 +44,7 @@ public sealed class StationStore
         command.ExecuteNonQuery();
         RemoveCycleStorage(db);
         EnsureArchiveFingerprints(db);
+        SplitSharedBrushVerdicts();
         if (Recipes().Count == 0)
             SaveRecipe(new Recipe(), true);
     }
@@ -112,6 +113,35 @@ public sealed class StationStore
         transaction.Commit();
     }
 
+    // 早期部署让地刷灯亮/灭判定与相机判定共用 D39/D40；同页查重生效后须拆到独立字 D38/D41（PLC 需另行发布）。
+    private void SplitSharedBrushVerdicts()
+    {
+        if (LoadSetting<string>("brush_verdict_split_v1") is not null)
+            return;
+        var points = LoadMonitorPoints();
+        var barcode = LoadBarcodePoint();
+        bool changed = SplitBrush(points, barcode, MonitorPointId.BrushLightVerdict, MonitorPointId.HeadlightIndicatorCameraVerdict, 38);
+        changed |= SplitBrush(points, barcode, MonitorPointId.BrushLightOffVerdict, MonitorPointId.IndicatorOffCameraVerdict, 41);
+        if (changed)
+            SaveMonitorPoints(points);
+        SaveSetting("brush_verdict_split_v1", "1");
+    }
+
+    private static bool SplitBrush(Dictionary<MonitorPointId, MonitorPoint> points, BarcodePoint? barcode,
+        MonitorPointId brush, MonitorPointId camera, ushort address)
+    {
+        if (!points.TryGetValue(brush, out var brushPoint)
+            || !points.TryGetValue(camera, out var cameraPoint)
+            || brushPoint.Address != cameraPoint.Address)
+            return false;
+        if (points.Any(pair => pair.Key != brush && pair.Value.Address <= address && address < pair.Value.End))
+            return false;
+        if (barcode is not null && barcode.Address <= address && address < barcode.End)
+            return false;
+        points[brush] = brushPoint with { Address = address };
+        return true;
+    }
+
     public Dictionary<MonitorPointId, MonitorPoint> LoadMonitorPoints() => LoadPoints<MonitorPointId, MonitorPoint>("monitor_points");
     internal BarcodePoint? LoadBarcodePoint() => LoadSetting<BarcodePoint>("barcode_point");
     internal ushort? LoadRecordTrigger() => LoadSetting<RecordTriggerPoint>("record_trigger")?.Address;
@@ -131,8 +161,12 @@ public sealed class StationStore
 
     public Dictionary<ManualPointId, ManualPoint> LoadManualPoints() => LoadPoints<ManualPointId, ManualPoint>("manual_points");
     public Dictionary<RecipePointId, ushort> LoadRecipePoints() => LoadPoints<RecipePointId, ushort>("recipe_points");
+    public Dictionary<RecipePointId, double> LoadRecipeScales() => LoadPoints<RecipePointId, double>("recipe_scales");
+    public Dictionary<RecipePointId, RegisterDataType> LoadRecipeTypes() => LoadPoints<RecipePointId, RegisterDataType>("recipe_types");
     public Dictionary<string, InspectionPoint> LoadInspectionPoints() => LoadPoints<string, InspectionPoint>("inspection_points");
     public PeripheralSettings LoadPeripherals() => LoadSetting<PeripheralSettings>("peripherals") ?? new(new(), new());
+    internal DevicePageState LoadDevicePageState() => LoadSetting<DevicePageState>("device_page_state") ?? new();
+    internal void SaveDevicePageState(DevicePageState state) => SaveSetting("device_page_state", state);
 
     private Dictionary<TKey, TValue> LoadPoints<TKey, TValue>(string key) where TKey : notnull =>
         LoadSetting<Dictionary<TKey, TValue>>(key) ?? new();
@@ -178,6 +212,8 @@ public sealed class StationStore
     }
     public void SaveManualPoints(IReadOnlyDictionary<ManualPointId, ManualPoint> points) => SavePoints("manual_points", points);
     public void SaveRecipePoints(IReadOnlyDictionary<RecipePointId, ushort> points) => SavePoints("recipe_points", points);
+    public void SaveRecipeScales(IReadOnlyDictionary<RecipePointId, double> scales) => SavePoints("recipe_scales", scales);
+    public void SaveRecipeTypes(IReadOnlyDictionary<RecipePointId, RegisterDataType> types) => SavePoints("recipe_types", types);
     public void SaveInspectionPoints(IReadOnlyDictionary<string, InspectionPoint> points) => SavePoints("inspection_points", points);
     public void SavePeripherals(PeripheralSettings settings) => SaveSetting("peripherals", settings);
 
@@ -381,7 +417,7 @@ public sealed class StationStore
     public static void Export(string path, IEnumerable<TestRecord> records)
     {
         using var writer = new StreamWriter(path, false, new UTF8Encoding(true));
-        writer.WriteLine("二维码,时间,正常电压,地刷灯亮判定,正常电流,正常电流判定结果,正常功率,正常功率判定结果,正常转速,正常转速判定结果,转速方向判定结果,地刷灯灭判定,灰尘测试电流,灰尘电流判定结果,灰尘测试功率,灰尘功率判定结果,灰尘测试转速,灰尘转速判定结果,总判定结果");
+        writer.WriteLine("二维码,时间,正常电压,地刷灯亮判定,正常电流,正常电流判定结果,正常功率,正常功率判定结果,正常转速,正常转速判定结果,转速方向判定结果,地刷灯灭判定,灰尘测试电流,灰尘电流判定结果,灰尘测试功率,灰尘功率判定结果,灰尘测试转速,灰尘转速判定结果,灰尘感应电压,实时电流,实时功率,总判定结果");
         static string? VerdictCell(Verdict? verdict) => verdict is Verdict value ? Texts.Verdict(value) : null;
         foreach (var record in records)
         {
@@ -397,6 +433,7 @@ public sealed class StationStore
                 test.DustCurrent, VerdictCell(test.DustCurrentVerdict),
                 test.DustPower, VerdictCell(test.DustPowerVerdict),
                 test.DustSpeed, VerdictCell(test.DustSpeedVerdict),
+                test.DustVoltage, test.RealtimeCurrent, test.RealtimePower,
                 VerdictCell(test.Result)
             ];
             writer.WriteLine(string.Join(",", cells.Select(CsvCell)));

@@ -341,6 +341,24 @@ public sealed class Fm430ScannerTests
         Assert.Equal("NG", await scanner.ScanAsync(TimeSpan.FromSeconds(1)));
     }
 
+    [Fact]
+    public async Task DataReceivedReportsRawBytesEvenWithoutFrameTerminator()
+    {
+        using var port = new FakeSerialTransport();
+        await using var scanner = Create(port);
+        var received = new ConcurrentQueue<byte[]>();
+        scanner.DataReceived += bytes => received.Enqueue(bytes.ToArray());
+        await scanner.ConnectAsync();
+        port.Enqueue([0x02, 0x41, 0x03]);
+
+        await Assert.ThrowsAsync<TimeoutException>(() => scanner.ReadBarcodeAsync(TimeSpan.FromMilliseconds(200)));
+        Assert.Equal(new byte[] { 0x02, 0x41, 0x03 }, Assert.Single(received));
+
+        port.Enqueue("OK\r\n");
+        Assert.Equal("\u0002A\u0003OK", await scanner.ReadBarcodeAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(2, received.Count);
+    }
+
     private static Fm430Scanner Create(FakeSerialTransport port) => new(new("COM-test"), _ => port);
 
     private sealed class FakeSerialTransport : ISerialTransport

@@ -58,11 +58,8 @@ public sealed record PlcSettings
             || Commands.Values.Distinct().Count() != Commands.Count)
             throw new InvalidOperationException("PLC 命令名称无效或线圈地址重复。");
 
-        if (RecipeAddress is ushort address &&
-            (address + PlcLayout.RecipeWords > 65536 || (!UseInputRegisters
-                && address < TelemetryAddress + PlcLayout.TelemetryWords
-                && TelemetryAddress < address + PlcLayout.RecipeWords)))
-            throw new InvalidOperationException("配方地址超出范围或与监控保持寄存器重叠。");
+        if (RecipeAddress is ushort address && address + PlcLayout.RecipeWords > 65536)
+            throw new InvalidOperationException("配方地址超出范围。");
     }
 }
 
@@ -116,6 +113,8 @@ public sealed class ModbusStation : IStation
     private MonitorReadPlan readPlan = null!;
     private RecipeWritePlan recipePlan = null!;
     private IReadOnlyDictionary<RecipePointId, ushort> recipeOverrides = null!;
+    private IReadOnlyDictionary<RecipePointId, double> recipeScales = new Dictionary<RecipePointId, double>();
+    private IReadOnlyDictionary<RecipePointId, RegisterDataType> recipeTypes = new Dictionary<RecipePointId, RegisterDataType>();
     private Dictionary<ManualPointId, ManualPoint> manualPoints = null!;
     private IReadOnlyDictionary<string, InspectionPoint> inspectionOverrides = null!;
     private ushort? recordTrigger;
@@ -141,15 +140,19 @@ public sealed class ModbusStation : IStation
     public ModbusStation(PlcSettings settings, IReadOnlyDictionary<MonitorPointId, MonitorPoint>? monitorPoints = null,
         IReadOnlyDictionary<ManualPointId, ManualPoint>? manualOverrides = null,
         IReadOnlyDictionary<RecipePointId, ushort>? recipePoints = null,
-        IReadOnlyDictionary<string, InspectionPoint>? inspectionPoints = null) =>
-        Configure(settings, monitorPoints, manualOverrides, recipePoints, inspectionPoints);
+        IReadOnlyDictionary<string, InspectionPoint>? inspectionPoints = null,
+        IReadOnlyDictionary<RecipePointId, double>? recipeScales = null,
+        IReadOnlyDictionary<RecipePointId, RegisterDataType>? recipeTypes = null) =>
+        Configure(settings, monitorPoints, manualOverrides, recipePoints, inspectionPoints,
+            recipeScales: recipeScales, recipeTypes: recipeTypes);
 
     // The application stops polling and flushes manual releases before reconfiguring the shared PLC.
     internal void Configure(PlcSettings configuration, IReadOnlyDictionary<MonitorPointId, MonitorPoint>? monitorPoints,
         IReadOnlyDictionary<ManualPointId, ManualPoint>? manualOverrides,
         IReadOnlyDictionary<RecipePointId, ushort>? recipePoints, IReadOnlyDictionary<string, InspectionPoint>? inspectionPoints,
         BarcodePoint? barcodePoint = null, ushort? recordTrigger = null, ScannerTriggerSettings? scannerSettings = null,
-        ushort? timerTrigger = null)
+        ushort? timerTrigger = null, IReadOnlyDictionary<RecipePointId, double>? recipeScales = null,
+        IReadOnlyDictionary<RecipePointId, RegisterDataType>? recipeTypes = null)
     {
         if (pendingScannerResult is not null)
             throw new InvalidOperationException("扫码结果尚未确认写回，请等待通讯恢复后再切换 PLC。");
@@ -157,13 +160,17 @@ public sealed class ModbusStation : IStation
         scanning.Validate();
         var monitoring = new MonitorReadPlan(configuration, monitorPoints ?? new Dictionary<MonitorPointId, MonitorPoint>(), barcodePoint);
         var recipes = new Dictionary<RecipePointId, ushort>(recipePoints ?? new Dictionary<RecipePointId, ushort>());
-        var writePlan = new RecipeWritePlan(configuration, recipes, monitoring);
+        var scales = new Dictionary<RecipePointId, double>(recipeScales ?? new Dictionary<RecipePointId, double>());
+        var types = new Dictionary<RecipePointId, RegisterDataType>(recipeTypes ?? new Dictionary<RecipePointId, RegisterDataType>());
+        var writePlan = new RecipeWritePlan(configuration, recipes, scales, types);
         var inspection = new Dictionary<string, InspectionPoint>(inspectionPoints ?? new Dictionary<string, InspectionPoint>());
         var manual = InspectionPoints.Validate(configuration, inspection, manualOverrides, recordTrigger);
 
         settings = configuration;
         readPlan = monitoring;
         recipeOverrides = recipes;
+        recipeScales = scales;
+        recipeTypes = types;
         recipePlan = writePlan;
         inspectionOverrides = inspection;
         this.recordTrigger = recordTrigger;
@@ -172,7 +179,6 @@ public sealed class ModbusStation : IStation
         scannerTrigger = scanning;
         manualPoints = manual;
         feedbackAddresses = FeedbackAddresses(manualPoints);
-        ValidateScannerSettings(scannerTrigger);
     }
 
     internal void CloseConnection() => Disconnect();
@@ -412,7 +418,6 @@ public sealed class ModbusStation : IStation
         {
             if (pendingScannerResult is not null)
                 throw new InvalidOperationException("扫码结果尚未确认写回，不能修改扫码地址。");
-            ValidateScannerSettings(updated);
             save();
             scannerTrigger = updated;
         }
@@ -428,7 +433,6 @@ public sealed class ModbusStation : IStation
             var points = scannerTrigger;
             if (points.TriggerAddress is not ushort trigger)
                 return null;
-            ValidateScannerSettings(points);
             bool requested = await ReadCoilAsync(trigger, cancellationToken);
             if (!requested)
             {
@@ -456,56 +460,6 @@ public sealed class ModbusStation : IStation
             return result;
         }
         finally { scannerTransaction.Release(); }
-    }
-
-    private void ValidateScannerSettings(ScannerTriggerSettings points)
-    {
-        points.Validate();
-        if (points.TriggerAddress is not ushort trigger)
-        {
-            ValidateScannerRegisterRanges(points);
-            return;
-        }
-
-        var commands = StationActions.Devices.Where(item => StationActions.IsInspectionSwitch(item.Key))
-            .Select(item => InspectionPoints.Resolve(settings, inspectionOverrides, item.Key).WriteAddress)
-            .Append(InspectionPoints.Resolve(settings, inspectionOverrides, "reset").WriteAddress)
-            .Concat(manualPoints.Values.Select(point => (ushort?)point.WriteAddress))
-            .Append(recordTrigger);
-        if (commands.Contains(trigger))
-            throw new InvalidOperationException("扫码触发线圈与其他写入命令地址冲突。");
-        ValidateScannerRegisterRanges(points);
-    }
-
-    private void ValidateScannerRegisterRanges(ScannerTriggerSettings points)
-    {
-        int barcodeStart = points.BarcodeAddress;
-        int barcodeEnd = barcodeStart + ScannerTriggerSettings.MaxBarcodeWords;
-        int verdictStart = points.VerdictAddress;
-        int verdictEnd = verdictStart + 1;
-        // The scanner writes the same registers the monitoring page reads back as the barcode,
-        // so that range may coincide with the barcode point; other monitored areas stay protected.
-        // 比对结果可落在监控整块读取区的空闲寄存器（如 PLC 原生扫码判定 D3），但不能覆盖已映射的监控点。
-        if (readPlan.OverlapsHoldingRegisters(barcodeStart, barcodeEnd, includeBarcode: false)
-            || readPlan.OverlapsHoldingRegisters(verdictStart, verdictEnd, includeTelemetryBlock: false))
-            throw new InvalidOperationException("扫码结果寄存器不能与 PLC 监控读取区重叠。");
-
-        bool Overlaps(int start, int end, int otherStart, int otherEnd) =>
-            start < otherEnd && otherStart < end;
-        if (settings.RecipeAddress is ushort recipeStart
-            && (Overlaps(barcodeStart, barcodeEnd, recipeStart, recipeStart + PlcLayout.RecipeWords)
-                || Overlaps(verdictStart, verdictEnd, recipeStart, recipeStart + PlcLayout.RecipeWords)))
-            throw new InvalidOperationException("扫码结果寄存器不能与 PLC 配方写入区重叠。");
-
-        foreach (var (id, point) in RecipePoint.All)
-        {
-            if (!recipeOverrides.TryGetValue(id, out ushort address)
-                || address == point.DefaultAddress(settings))
-                continue;
-            if (Overlaps(barcodeStart, barcodeEnd, address, address + point.WordCount)
-                || Overlaps(verdictStart, verdictEnd, address, address + point.WordCount))
-                throw new InvalidOperationException($"扫码结果寄存器不能与“{point.Label}”写入地址重叠。");
-        }
     }
 
     internal Task<bool?> ProcessRecordTriggerAsync(Func<TestSnapshot, bool> archive, CancellationToken cancellationToken) =>
@@ -558,21 +512,25 @@ public sealed class ModbusStation : IStation
         ExchangeAsync(connection =>
         {
             var next = createPlan();
-            var updatedRecipePlan = new RecipeWritePlan(settings, recipeOverrides, next);
             save();
             readPlan = next;
-            recipePlan = updatedRecipePlan;
             return true;
         }, CancellationToken.None);
 
-    public async Task UpdateRecipePointsAsync(IReadOnlyDictionary<RecipePointId, ushort> points, Action save)
+    public async Task UpdateRecipePointsAsync(IReadOnlyDictionary<RecipePointId, ushort> points, Action save,
+        IReadOnlyDictionary<RecipePointId, double>? scales = null,
+        IReadOnlyDictionary<RecipePointId, RegisterDataType>? types = null)
     {
         await bus.WaitAsync();
         try
         {
-            var next = new RecipeWritePlan(settings, points, readPlan);
+            var nextScales = scales is null ? recipeScales : new Dictionary<RecipePointId, double>(scales);
+            var nextTypes = types is null ? recipeTypes : new Dictionary<RecipePointId, RegisterDataType>(types);
+            var next = new RecipeWritePlan(settings, points, nextScales, nextTypes);
             save();
             recipeOverrides = new Dictionary<RecipePointId, ushort>(points);
+            recipeScales = nextScales;
+            recipeTypes = nextTypes;
             recipePlan = next;
         }
         finally { bus.Release(); }
@@ -685,7 +643,7 @@ public sealed class ModbusStation : IStation
 public static class PlcLayout
 {
     public const ushort TelemetryWords = 64;
-    public const ushort RecipeWords = 64;
+    public const ushort RecipeWords = 80;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     /// <summary>PLC 运行状态码：1 待机、2 运行中、3 测试OK、4 测试NG、5 急停、6 扫码内容错误、7 电压不在范围内。</summary>
@@ -733,9 +691,12 @@ public static class PlcLayout
             Stage = stage,
             RunState = runState,
             Voltage = readPoint(MonitorPointId.Voltage),
+            RealtimeCurrent = readPoint(MonitorPointId.RealtimeCurrent),
+            RealtimePower = readPoint(MonitorPointId.RealtimePower),
             NormalVoltage = readPoint(MonitorPointId.NormalVoltage),
             NormalCurrent = readPoint(MonitorPointId.NormalCurrent),
             DustCurrent = readPoint(MonitorPointId.DustCurrent),
+            DustVoltage = readPoint(MonitorPointId.DustVoltage),
             NormalPower = readPoint(MonitorPointId.NormalPower),
             DustPower = readPoint(MonitorPointId.DustPower),
             PowerDelta = readPoint(MonitorPointId.PowerDelta),
@@ -761,12 +722,17 @@ public static class PlcLayout
         }, words[58]);
     }
 
-    public static ushort[] Encode(Recipe recipe, bool lowWordFirst)
+    public static ushort[] Encode(Recipe recipe, bool lowWordFirst, IReadOnlyDictionary<RecipePointId, double>? scales = null,
+        IReadOnlyDictionary<RecipePointId, RegisterDataType>? types = null)
     {
         var words = new ushort[RecipeWords];
         words[0] = 1;
-        foreach (var point in RecipePoint.All.Values)
-            point.Encode(recipe, words.AsSpan(point.Offset, point.WordCount), lowWordFirst);
+        foreach (var (id, point) in RecipePoint.All)
+        {
+            double scale = scales is not null && scales.TryGetValue(id, out double custom) ? custom : point.DefaultScale;
+            RegisterDataType type = types is not null && types.TryGetValue(id, out var customType) ? customType : point.DefaultType;
+            point.Encode(recipe, words.AsSpan(point.Offset, RecipePoint.WordsFor(type)), lowWordFirst, scale, type);
+        }
         words[31] = (ushort)recipe.BarcodeStartIndex;
         WriteString(words, 32, 16, recipe.Model, "产品型号");
         words[48] = (ushort)recipe.BarcodeCompareLength;

@@ -179,7 +179,7 @@ public sealed class ScannerTriggerTests
     }
 
     [Fact]
-    public void VerdictDefaultsToD3AndMayShareTelemetryBlockOnlyIfUnmapped()
+    public void VerdictDefaultsToD3AndMayShareRegistersWithMonitorPoints()
     {
         var settings = new DustLoadScada.PlcSettings();
         Assert.Equal((ushort)3, new DustLoadScada.ScannerTriggerSettings().VerdictAddress);
@@ -187,11 +187,69 @@ public sealed class ScannerTriggerTests
         // D3 落在监控整块 D0–D63 内，但没有监控点占用，默认比对结果 D3 应能正常启动。
         using var station = new DustLoadScada.ModbusStation(settings);
 
-        // 一旦 D3 被映射成监控点，比对结果再写 D3 就必须被拒绝。
+        // 扫码写回与监控属于不同页面，D3 即使被映射成监控点也允许共用。
         var overrides = new Dictionary<DustLoadScada.MonitorPointId, DustLoadScada.MonitorPoint>
         {
             [DustLoadScada.MonitorPointId.RunState] = new(3, DustLoadScada.RegisterDataType.Int16)
         };
-        Assert.Throws<InvalidOperationException>(() => new DustLoadScada.ModbusStation(settings, overrides));
+        using var shared = new DustLoadScada.ModbusStation(settings, overrides);
+    }
+
+    [Theory]
+    [InlineData(6)]   // 与实时电压默认地址 D6–D7 完全相同
+    [InlineData(7)]   // 与实时电压部分重叠
+    [InlineData(26)]  // 落在默认二维码 D26–D41 内
+    public void MonitorPointsRejectDuplicatesWithinThePage(ushort address)
+    {
+        var settings = new DustLoadScada.PlcSettings();
+        var overrides = new Dictionary<DustLoadScada.MonitorPointId, DustLoadScada.MonitorPoint>
+        {
+            [DustLoadScada.MonitorPointId.RunState] = new(address, DustLoadScada.RegisterDataType.Int16)
+        };
+
+        Assert.Throws<InvalidOperationException>(() => new DustLoadScada.MonitorReadPlan(settings, overrides));
+    }
+
+    [Fact]
+    public void RecipePointsMayShareRegistersWithMonitorPoints()
+    {
+        var settings = new DustLoadScada.PlcSettings { RecipeAddress = null };
+        var monitorOverrides = new Dictionary<DustLoadScada.MonitorPointId, DustLoadScada.MonitorPoint>
+        {
+            [DustLoadScada.MonitorPointId.RunState] = new(0, DustLoadScada.RegisterDataType.Int16)
+        };
+        _ = new DustLoadScada.MonitorReadPlan(settings, monitorOverrides);
+
+        var recipeOverrides = new Dictionary<DustLoadScada.RecipePointId, ushort>
+        {
+            [DustLoadScada.RecipePointId.PowerCycles] = 0,
+            [DustLoadScada.RecipePointId.GearCycles] = 1
+        };
+        _ = new DustLoadScada.RecipeWritePlan(settings, recipeOverrides);
+    }
+
+    [Fact]
+    public void RealtimeCurrentPowerAndDustVoltageReadFromTheirPointTableAddresses()
+    {
+        var settings = new DustLoadScada.PlcSettings();
+        var memory = new ushort[65536];
+        void WriteFloat(ushort address, float value)
+        {
+            uint bits = BitConverter.SingleToUInt32Bits(value);
+            memory[address] = (ushort)bits;
+            memory[address + 1] = (ushort)(bits >> 16);
+        }
+        WriteFloat(302, 1.5f);
+        WriteFloat(304, 86.25f);
+        WriteFloat(402, 24.5f);
+        var plan = new DustLoadScada.MonitorReadPlan(settings,
+            new Dictionary<DustLoadScada.MonitorPointId, DustLoadScada.MonitorPoint>());
+        ushort[] Read(ushort address, ushort count) => memory.AsSpan(address, count).ToArray();
+
+        var (test, _) = plan.Read(Read);
+
+        Assert.Equal(1.5, test.RealtimeCurrent);
+        Assert.Equal(86.25, test.RealtimePower);
+        Assert.Equal(24.5, test.DustVoltage);
     }
 }

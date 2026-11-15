@@ -33,10 +33,8 @@ internal static class InspectionPoints
         var manualWrites = resolvedManual.Values.Select(point => point.WriteAddress).ToHashSet();
         if (switches.Any(point => point.FeedbackAddress is ushort read && manualWrites.Contains(read)))
             throw new InvalidOperationException("检测开关的反馈地址与手动写入地址重叠。");
-        if (recordTrigger is ushort trigger && (PlcAddress.IsPhysicalIo(trigger) || writes.Contains(trigger)
-            || switches.Any(point => point.FeedbackAddress == trigger)
-            || resolvedManual.Values.Any(point => point.WriteAddress == trigger || point.FeedbackAddress == trigger)))
-            throw new InvalidOperationException("记录触发须使用独立的可写线圈，不能与命令、反馈地址重叠，也不能位于 X/Y 区。");
+        if (recordTrigger is ushort trigger && PlcAddress.IsPhysicalIo(trigger))
+            throw new InvalidOperationException("记录触发线圈不能位于 X 输入区或 Y 输出区。");
         return resolvedManual;
     }
 }
